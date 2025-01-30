@@ -1,133 +1,151 @@
 #include "scene.h"
-#include "hashtable.h"
 #include <raylib.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
-void freeScenes(scenes* sc) {
-    // for (int i = 0; i < sc->count; i++) {
-    //     free(sc->scene[i].musicFilePath);
-    //     free(sc->scene[i].textureFilePath);
-    //     UnloadMusicStream(sc->scene[i].music);
-    //     UnloadTexture(sc->scene[i].texture);
-    //     for (int j = 0; j < sc->scene[i].paracount; j++) {
-    //         free(sc->scene[i].paragraphs[j].text);
-    //     }
-    //     free(sc->scene[i].paragraphs);
-    // }
-    // free(sc->scene);
-}
+#ifndef DA_INIT_CAP
+#define DA_INIT_CAP 256
+#endif
 
-scenes* loadScenes(const char* directory) {
+#define da_append(da, item)                                                          \
+    do {                                                                             \
+        if ((da)->count >= (da)->capacity) {                                         \
+            (da)->capacity = (da)->capacity == 0 ? DA_INIT_CAP : (da)->capacity*2;   \
+            (da)->items = realloc((da)->items, (da)->capacity*sizeof(*(da)->items)); \
+            assert((da)->items != NULL && "Buy more RAM lol");                       \
+        }                                                                            \
+        (da)->items[(da)->count++] = (item);                                         \
+    } while (0)
+
+
+scenes* loadScenes(const char* directory)
+{
     DIR* dir = opendir(directory);
-    if (!dir) {
-        perror("Failed to open directory");
-        return NULL;
-    }
+    if (!dir) { perror("Failed to open directory"); return NULL; }
 
+    scenes* sc = calloc(1, sizeof(*sc));
     struct dirent* entry;
-    scenes* sc = malloc(sizeof(scenes));
-    sc->count = 0;
-    sc->currentScene = NULL;
-    sc->ht = hashtable_create(128, NULL);
-
     while ((entry = readdir(dir)) != NULL) {
         if (entry->d_type == DT_REG && strstr(entry->d_name, ".txt")) {
-            scene* current_scene = malloc(sizeof(scene));
-            current_scene->paracount = 0;
-            current_scene->paragraphs = NULL;
-
             char filepath[256];
-            snprintf(filepath, sizeof(filepath), "%s/%s", directory, entry->d_name);
+            snprintf(filepath, 256, "%s/%s", directory, entry->d_name);
+
             FILE* file = fopen(filepath, "r");
-            if (!file) {
-                perror("Failed to open file");
-                continue;
-            }
+            if (!file) { perror("Failed to open file"); continue; }
 
-            char* line = NULL;
-            size_t len = 0;
-            int paragraph_count = 0;
-            int in_paragraph = 0;
-
+            scene* s = calloc(1, sizeof(*s));
+            char*  line = NULL;
+            size_t len  = 0;
             while (getline(&line, &len, file) != -1) {
                 line[strcspn(line, "\n")] = 0;
-
-                if (strlen(line) == 0) {
-                    if (in_paragraph) {
-                        paragraph_count++;
-                        in_paragraph = 0;
+                if (strncmp(line, "::image", 7) == 0) {
+                    if (getline(&line, &len, file) != -1) {
+                        line[strcspn(line, "\n")] = 0;
+                        Directive d = { DIRECTIVE_IMAGE, strdup(line) };
+                        da_append(&s->directives, d);
                     }
-                } else if (strncmp(line, "::", 2) == 0) {
-                    // TODO: handle scene transitions, image/audio (starting point?) loading.
-                    // Scene transition (e.g., "::scene2")
-                    line += 2;
-                    if (strncmp(line, "image", 5)) {
-                        // These are one more due to whitespace
-                        line += 6;
-                        Image image = LoadImage(line);
-                        current_scene->texture = LoadTextureFromImage(image);
-                        UnloadImage(image);
-                        current_scene->textureFilePath = line;
-                    } else if (strncmp(line, "audio", 5)) { 
-                        line += 6;
-                        current_scene->music = LoadMusicStream(line);    
-                        current_scene->musicFilePath = line;
-                    } else if (strncmp(line, "next", 4)) {
-                        line += 5;
-                        // TODO: Keep track of scenes and point the next scene to the current scene (maybe this has to be done at the end?)
-                    } else {
-                        printf("[WARNING] Unkown scene argument: %s\n", line);
+                } else if (strncmp(line, "::music", 7) == 0) {
+                    if (getline(&line, &len, file) != -1) {
+                        line[strcspn(line, "\n")] = 0;
+                        Directive d = { DIRECTIVE_MUSIC, strdup(line) };
+                        da_append(&s->directives, d);
                     }
-                } else {
-                    if (!in_paragraph) {
-                        current_scene->paragraphs = realloc(current_scene->paragraphs, sizeof(struct paragraph_t) * (paragraph_count + 1));
-                        current_scene->paragraphs[paragraph_count].count = 0; // Reset count for new paragraph
-                        current_scene->paragraphs[paragraph_count].text = NULL;
-                        in_paragraph = 1;
+                } else if (strncmp(line, "::text", 6) == 0) {
+                    if (getline(&line, &len, file) != -1) {
+                        line[strcspn(line, "\n")] = 0;
+                        Directive d = { DIRECTIVE_TEXT, strdup(line) };
+                        da_append(&s->directives, d);
                     }
-                    size_t current_length = current_scene->paragraphs[paragraph_count].count;
-                    current_scene->paragraphs[paragraph_count].text = realloc(current_scene->paragraphs[paragraph_count].text, current_length + strlen(line) + 2);
-                    if (current_length == 0) {
-                        strcpy(current_scene->paragraphs[paragraph_count].text, line);
-                    } else {
-                        strcat(current_scene->paragraphs[paragraph_count].text, "\n");
-                        strcat(current_scene->paragraphs[paragraph_count].text, line);
+                } else if (strncmp(line, "::scene", 7) == 0) {
+                    if (getline(&line, &len, file) != -1) {
+                        line[strcspn(line, "\n")] = 0;
+                        Directive d = { DIRECTIVE_SCENE, strdup(line) };
+                        da_append(&s->directives, d);
+                        s->nextSceneName = strdup(line);
                     }
-                    current_scene->paragraphs[paragraph_count].count++;
                 }
             }
-            if (in_paragraph) {
-                paragraph_count++;
-            }
-            current_scene->paracount = paragraph_count;
-
-            hashtable_put(sc->ht, entry->d_name, current_scene);
-
+            s->sceneName = strdup(entry->d_name);
             fclose(file);
             free(line);
-            sc->count++;
+            da_append(sc, s);
         }
     }
     closedir(dir);
     return sc;
 }
 
-void updateScene(scene* sc)
+void freeScenes(scenes* sc) {
+    for (int i = 0; i < sc->count; i++) {
+        for (int j = 0; j < sc->items[i]->directives.count; j++) {
+            free(sc->items[i]->directives.items[j].payload);
+            free(&sc->items[i]->directives.items[j]);
+        }
+        free(sc->items[i]->sceneName);
+        free(sc->items[i]->nextSceneName);
+    }
+    free(sc->items);
+}
+
+void updateScene(scenes* sc)
 {
-    bool nextScene = false;
-    bool sceneInit = true;
-    while (!nextScene)
-    {
-        if (sceneInit) {
-            PlayMusicStream(sc->music);
-            sceneInit = false;
-        } else {
-            UpdateMusicStream(sc->music);
+    if (sc->currentScene.nextScene) {
+        bool nextScene = false;
+        bool sceneInit = true;
+        sc->currentScene.sceneIndex += 1;
+    }
+    if (sc->currentScene.sceneInit) {
+        PlayMusicStream(sc->currentScene.music);
+        sc->currentScene.sceneInit = false;
+    } else {
+        UpdateMusicStream(sc->currentScene.music);
+    }
+    // TODO: check if this edge case actually happens
+    if (sc->currentScene.nextDirective) {
+        if (sc->currentScene.directiveIndex == 0) {
+            sc->currentScene.directiveIndex -= 1;
+        }
+        sc->currentScene.directiveIndex += 1;
+        switch (sc->items[sc->currentScene.sceneIndex]->directives.items[sc->currentScene.directiveIndex].type) {
+            case DIRECTIVE_IMAGE:
+            {
+                sc->currentScene.nextDirective = true;
+                // TODO: find more robust method for checking if there is a texture or song currently loaded
+                if (sc->currentScene.sceneIndex != 0) {
+                    UnloadTexture(sc->currentScene.texture);
+                }
+                Image tmpImage = LoadImage(sc->items[sc->currentScene.sceneIndex]->directives.items[sc->currentScene.directiveIndex].payload);
+                sc->currentScene.texture = LoadTextureFromImage(tmpImage);
+                UnloadImage(tmpImage);
+            } break;
+            case DIRECTIVE_MUSIC:
+            {
+                sc->currentScene.nextDirective = true;
+                if (sc->currentScene.sceneIndex != 0) {
+                    UnloadMusicStream(sc->currentScene.music);
+                }
+                sc->currentScene.music = LoadMusicStream(sc->items[sc->currentScene.sceneIndex]->directives.items[sc->currentScene.directiveIndex].payload);
+            } break;
+            case DIRECTIVE_TEXT:
+            {
+                sc->currentScene.text = sc->items[sc->currentScene.sceneIndex]->directives.items[sc->currentScene.directiveIndex].payload;
+            } break;
+            case DIRECTIVE_SCENE:
+            {
+                sc->currentScene.nextScene = true;
+                sc->currentScene.directiveIndex = 0;
+            } break;
+            default: break;
         }
     }
 }
 
-void drawScene(scene* sc, cfg* cfg)
+void drawScene(sceneState* sc, cfg* cfg)
 {
     DrawTexture(sc->texture, cfg->screenWidth/2 + sc->texture.width/2, cfg->screenHeight/2 + sc->texture.height/2, WHITE);
+    
+    // TODO: Bounded text
+    DrawRectangleLinesEx(cfg->container, 3, cfg->borderColor);
+    DrawTextBoxed(cfg->font, sc->text, (Rectangle){ cfg->container.x - 4, cfg->container.y - 4, cfg->container.width + 4, cfg->container.height + 4 }, cfg->fontSize, 2.0f, true, GRAY);
 }

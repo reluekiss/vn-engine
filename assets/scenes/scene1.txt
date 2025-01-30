@@ -1,5 +1,14 @@
+::image
+cat.png
+
+::music
+country.mp3
+
+::text
 hi
 
+::text
 lets go
 
-::scene2
+::scene
+scene2.txt

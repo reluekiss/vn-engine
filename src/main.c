@@ -1,8 +1,8 @@
 #include "scene.h"
 #include "raylib.h"
-#include "boundedtext.c"
 #include <assert.h>
 #include <stdbool.h>
+
 
 typedef struct state_t {
     int framesCounter;
@@ -23,6 +23,7 @@ typedef struct state_t {
         bool initial;
         Music music;
     } title;
+    
 } state;
 
 void updateScreenState(state *state, scenes *sc)
@@ -32,8 +33,6 @@ void updateScreenState(state *state, scenes *sc)
     {
         case LOGO:
         {
-            // TODO: Update LOGO screen variables here!
-
             state->framesCounter++;    // Count frames
 
             if (state->framesCounter > 120)
@@ -51,7 +50,7 @@ void updateScreenState(state *state, scenes *sc)
                 UpdateMusicStream(state->title.music);
             }
 
-            if (IsKeyPressed(KEY_ENTER) || IsGestureDetected(GESTURE_TAP))
+            if (IsKeyPressed(KEY_ENTER))
             {
                 state->currentScreen = GAMEPLAY;
             }
@@ -59,17 +58,17 @@ void updateScreenState(state *state, scenes *sc)
         case GAMEPLAY:
         {
             // TODO: Update GAMEPLAY screen variables here!
-            //updateScene(sc->currentScene);
-            if (IsKeyPressed(KEY_ENTER) || IsGestureDetected(GESTURE_TAP))
+            updateScene(sc);
+            if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_SPACE))
             {
-                state->currentScreen = ENDING;
+                sc->currentScene.nextDirective = true;
             }
         } break;
         case ENDING:
         {
             // TODO: Update ENDING screen variables here!
 
-            if (IsKeyPressed(KEY_ENTER) || IsGestureDetected(GESTURE_TAP))
+            if (IsKeyPressed(KEY_ENTER))
             {
                 state->currentScreen = TITLE;
             }
@@ -86,6 +85,9 @@ int main(void)
         .screenHeight = GetScreenHeight(),
         .targetFPS = 60,
         .fontSize = 20,
+        .container = { cfg.screenWidth/5, cfg.screenHeight/5, 4 * cfg.screenWidth/5, 4*cfg.screenHeight/5 },
+        .borderColor = MAROON,
+        .font = GetFontDefault(),
     }; 
 
     state state = {
@@ -98,22 +100,28 @@ int main(void)
 
     SetTargetFPS(cfg.targetFPS);
 
-    Image logo_image = LoadImage("assets/cat.png");
+    Image logo_image = LoadImage("assets/images/cat.png");
     state.logo.texture = LoadTextureFromImage(logo_image);
     UnloadImage(logo_image);
 
     InitAudioDevice();
-    state.title.music = LoadMusicStream("assets/country.mp3");
+    state.title.music = LoadMusicStream("assets/music/country.mp3");
     
-    // TODO: tmp text bounding box config
-    Rectangle container = { cfg.screenWidth/5, cfg.screenHeight/5, 4 * cfg.screenWidth/5, 4*cfg.screenHeight/5 };
+    scenes *sc = loadScenes("assets/scenes");
+    
+    sc->currentScene = (sceneState){
+        .texture = {0},
+        .music = NULL,
+        .text = NULL,
 
-    Color borderColor = MAROON;         // Container border color
-    Font font = GetFontDefault();       // Get default system font
-    char text[] = "This is a test for bounding fonts on screen";
+        .sceneIndex = 0,
+        .directiveIndex = 0,
 
-    scenes *sc = NULL; //loadScenes("assets/scenes");
-
+        .nextDirective = false,
+        .nextScene = false,
+        .sceneInit = true,
+    };
+     
     // Main game loop
     while (!WindowShouldClose())
     {
@@ -145,11 +153,7 @@ int main(void)
                 } break;
                 case GAMEPLAY:
                 {
-                    // TODO: Bounded text
-                    DrawRectangleLinesEx(container, 3, borderColor);
-                    DrawTextBoxed(font, text, (Rectangle){ container.x - 4, container.y - 4, container.width + 4, container.height + 4 }, cfg.fontSize, 2.0f, true, GRAY);
-
-                    //drawScene(sc->currentScene, &cfg);
+                    drawScene(&sc->currentScene, &cfg);
                     DrawText("GAMEPLAY SCREEN", 20, 20, 40, MAROON);
                     DrawText("PRESS ENTER or TAP to JUMP to ENDING SCREEN", 130, 220, 20, MAROON);
 
