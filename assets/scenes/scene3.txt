@@ -11,7 +11,7 @@ country.mp3
 ::text
 :name kitty
 :pos
-hi
+hi this is scene 3
 
 ::sound
 hey.mp3
