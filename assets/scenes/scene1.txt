@@ -30,9 +30,6 @@ lets go
 200x100
 pirate.jpg
 
-::bg
-16-bit-memories.jpg
-
 ::scene
 option 1
 scene2.txt
