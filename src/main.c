@@ -8,7 +8,7 @@
 #define MAX_OPTIONS 2
 #define MAX_SPRITES 10
 
-typedef enum { CMD_BG, CMD_SPRITE, CMD_MUSIC, CMD_SOUND, CMD_TEXT, CMD_SCENE } CommandType;
+typedef enum { CMD_BG, CMD_SPRITE, CMD_MUSIC, CMD_SOUND, CMD_TEXT, CMD_SCENE, CMD_USPRITE } CommandType;
 
 typedef struct {
     char optionText[BUFFER_SIZE];
@@ -17,17 +17,19 @@ typedef struct {
 
 typedef struct {
     CommandType type;
-    char arg1[BUFFER_SIZE];  // For text content or other command data
-    char arg2[BUFFER_SIZE];  // e.g. sprite filename
+    char arg1[BUFFER_SIZE];  // For legacy data (position string for sprite, text content, etc.)
+    char arg2[BUFFER_SIZE];  // For filenames
 
-    // For text commands:
     char name[BUFFER_SIZE];
     bool hasName;
-    Vector2 pos;  // Position (top-left) of the textbox in base resolution pixels (800x450)
+    Vector2 pos;
     bool hasPos;
 
+    char spriteID[BUFFER_SIZE];
+    bool hasSpriteID;
+
     int optionCount;
-    SceneOption options[MAX_OPTIONS]; // For scene commands
+    SceneOption options[MAX_OPTIONS];
 } SceneCommand;
 
 typedef struct {
@@ -41,6 +43,8 @@ typedef struct {
     struct {
         Texture2D texture;
         Vector2 pos;
+        char id[BUFFER_SIZE];
+        bool hasID;
     } sprites[MAX_SPRITES];
     int spriteCount;
 
@@ -59,7 +63,7 @@ static void ProcessCommand(Scene *scene, SceneCommand *cmd) {
     char path[BUFFER_SIZE];
     switch(cmd->type) {
         case CMD_BG:
-            if (scene->hasBackground) UnloadTexture(scene->background);
+            if (scene->hasBackground) { UnloadTexture(scene->background); }
             snprintf(path, BUFFER_SIZE, "assets/images/%s", cmd->arg1);
             {
                 Image img = LoadImage(path);
@@ -72,11 +76,19 @@ static void ProcessCommand(Scene *scene, SceneCommand *cmd) {
             if (scene->spriteCount < MAX_SPRITES) {
                 snprintf(path, BUFFER_SIZE, "assets/images/%s", cmd->arg2);
                 Image img = LoadImage(path);
+                // Determine position: use extended :pos if provided; otherwise legacy arg1.
+                int x = 0, y = 0;
+                if (cmd->hasPos) { x = (int)cmd->pos.x; y = (int)cmd->pos.y; }
+                else { sscanf(cmd->arg1, "%dx%d", &x, &y); }
                 scene->sprites[scene->spriteCount].texture = LoadTextureFromImage(img);
                 UnloadImage(img);
-                int x = 0, y = 0;
-                sscanf(cmd->arg1, "%dx%d", &x, &y);
                 scene->sprites[scene->spriteCount].pos = (Vector2){ x, y };
+                if (cmd->hasSpriteID) {
+                    strcpy(scene->sprites[scene->spriteCount].id, cmd->spriteID);
+                    scene->sprites[scene->spriteCount].hasID = true;
+                } else {
+                    scene->sprites[scene->spriteCount].hasID = false;
+                }
                 scene->spriteCount++;
             }
             break;
@@ -92,14 +104,26 @@ static void ProcessCommand(Scene *scene, SceneCommand *cmd) {
             {
                 Sound s = LoadSound(path);
                 PlaySound(s);
-                UnloadSound(s);
+                // Consider managing sound lifetime if needed.
+            }
+            break;
+        case CMD_USPRITE:
+            for (int i = 0; i < scene->spriteCount; i++) {
+                if (scene->sprites[i].hasID && strcmp(scene->sprites[i].id, cmd->spriteID) == 0) {
+                    UnloadTexture(scene->sprites[i].texture);
+                    for (int j = i; j < scene->spriteCount - 1; j++) {
+                        scene->sprites[j] = scene->sprites[j+1];
+                    }
+                    scene->spriteCount--;
+                    break;
+                }
             }
             break;
         case CMD_TEXT:
-            // Text commands wait for user input.
+            // Wait for user input.
             break;
         case CMD_SCENE:
-            // Scene commands wait for user selection.
+            // Wait for user selection.
             break;
     }
 }
@@ -123,30 +147,82 @@ static void LoadSceneFromFile(Scene *scene, const char *sceneFile) {
     fp = fopen(path, "r");
     if (!fp) return;
     char line[BUFFER_SIZE];
+    int len;
     while (fgets(line, BUFFER_SIZE, fp)) {
-        int len = (int)strlen(line);
+        len = (int)strlen(line);
         if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
         if (strlen(line)==0) continue;
         if (strncmp(line, "::bg", 4)==0) {
+            SceneCommand *cmd = &scene->commands[scene->commandCount++];
+            cmd->type = CMD_BG;
             if (fgets(line, BUFFER_SIZE, fp)) {
                 len = (int)strlen(line);
                 if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
-                SceneCommand *cmd = &scene->commands[scene->commandCount++];
-                cmd->type = CMD_BG;
                 strcpy(cmd->arg1, line);
             }
         } else if (strncmp(line, "::sprite", 8)==0) {
             SceneCommand *cmd = &scene->commands[scene->commandCount++];
             cmd->type = CMD_SPRITE;
+            cmd->hasSpriteID = false;
+            cmd->hasPos = false;
+            // Peek next line.
             if (fgets(line, BUFFER_SIZE, fp)) {
                 len = (int)strlen(line);
                 if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
-                strcpy(cmd->arg1, line);  // e.g. "200x200"
+                if(line[0] == ':') {
+                    // Extended format.
+                    do {
+                        if (strncmp(line, ":id", 3)==0) {
+                            char *p = line + 3;
+                            while(*p==' ') p++;
+                            strcpy(cmd->spriteID, p);
+                            cmd->hasSpriteID = true;
+                        } else if (strncmp(line, ":pos", 4)==0) {
+                            char *p = line + 4;
+                            while(*p==' ') p++;
+                            int posX = 0, posY = 0;
+                            if (sscanf(p, "%dx%d", &posX, &posY)==2) {
+                                cmd->pos = (Vector2){ posX, posY };
+                                cmd->hasPos = true;
+                            }
+                        }
+                        long mark = ftell(fp);
+                        if (!fgets(line, BUFFER_SIZE, fp)) break;
+                        len = (int)strlen(line);
+                        if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
+                    } while(line[0] == ':');
+                    strcpy(cmd->arg2, line);
+                } else {
+                    // Legacy format.
+                    strcpy(cmd->arg1, line);
+                    if (fgets(line, BUFFER_SIZE, fp)) {
+                        len = (int)strlen(line);
+                        if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
+                        strcpy(cmd->arg2, line);
+                    }
+                }
             }
+        } else if (strncmp(line, "::Usprite", 9)==0) {
+            SceneCommand *cmd = &scene->commands[scene->commandCount++];
+            cmd->type = CMD_USPRITE;
+            cmd->hasSpriteID = false;
+            // Read parameters for unload command.
             if (fgets(line, BUFFER_SIZE, fp)) {
                 len = (int)strlen(line);
                 if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
-                strcpy(cmd->arg2, line);  // Sprite filename
+                while(line[0]==':') {
+                    if (strncmp(line, ":id", 3)==0) {
+                        char *p = line + 3;
+                        while(*p==' ') p++;
+                        strcpy(cmd->spriteID, p);
+                        cmd->hasSpriteID = true;
+                    }
+                    long mark = ftell(fp);
+                    if (!fgets(line, BUFFER_SIZE, fp)) break;
+                    len = (int)strlen(line);
+                    if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
+                    if(line[0] != ':') break;
+                }
             }
         } else if (strncmp(line, "::music", 7)==0) {
             SceneCommand *cmd = &scene->commands[scene->commandCount++];
@@ -169,7 +245,6 @@ static void LoadSceneFromFile(Scene *scene, const char *sceneFile) {
             cmd->type = CMD_TEXT;
             cmd->hasName = false;
             cmd->hasPos = false;
-            // Read subsequent lines: parameters (starting with ':') then text content.
             if (fgets(line, BUFFER_SIZE, fp)) {
                 len = (int)strlen(line);
                 if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
@@ -188,8 +263,7 @@ static void LoadSceneFromFile(Scene *scene, const char *sceneFile) {
                             cmd->hasPos = true;
                         }
                     }
-                    // Peek next line; if it doesn't start with ':' assume it's the text content.
-                    long currentPos = ftell(fp);
+                    long mark = ftell(fp);
                     if (!fgets(line, BUFFER_SIZE, fp))
                         break;
                     len = (int)strlen(line);
@@ -216,12 +290,18 @@ static void LoadSceneFromFile(Scene *scene, const char *sceneFile) {
         }
     }
     fclose(fp);
-    ProcessAutoCommands(scene);
+    // Process non-waiting commands.
+    while (scene->currentCommand < scene->commandCount) {
+        SceneCommand *cmd = &scene->commands[scene->currentCommand];
+        if (cmd->type == CMD_TEXT || cmd->type == CMD_SCENE)
+            break;
+        ProcessCommand(scene, cmd);
+        scene->currentCommand++;
+    }
 }
 
 int main(void)
 {
-    // Base resolution for relative positioning.
     const int baseWidth = 800, baseHeight = 450;
     InitWindow(baseWidth, baseHeight, "raylib scene system with text params");
     InitAudioDevice();
@@ -271,11 +351,9 @@ int main(void)
             for (int i = 0; i < scene.spriteCount; i++)
                 DrawTexture(scene.sprites[i].texture, (int)scene.sprites[i].pos.x, (int)scene.sprites[i].pos.y, WHITE);
 
-            // Draw text box if waiting for text.
             if (scene.currentCommand < scene.commandCount) {
                 SceneCommand *cmd = &scene.commands[scene.currentCommand];
                 if (cmd->type == CMD_TEXT) {
-                    // Default textbox relative values (from base resolution)
                     const float defaultXRel = 20.0f / (float)baseWidth;
                     const float defaultYRel = 330.0f / (float)baseHeight;
                     const float defaultWidthRel = 760.0f / (float)baseWidth;
