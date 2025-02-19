@@ -81,11 +81,11 @@ static void UnloadSceneAssets(Scene *scene) {
 }
 
 static void ProcessCommand(Scene *scene, SceneCommand *cmd) {
-    char path[BUFFER_SIZE];
+    char path[BUFFER_SIZE*2];
     switch(cmd->type) {
         case CMD_BG:
             if (scene->hasBackground) UnloadTexture(scene->background);
-            snprintf(path, BUFFER_SIZE, "assets/images/%s", cmd->arg1);
+            snprintf(path, BUFFER_SIZE*2, "assets/images/%s", cmd->arg1);
             {
                 Image img = LoadImage(path);
                 scene->background = LoadTextureFromImage(img);
@@ -95,7 +95,7 @@ static void ProcessCommand(Scene *scene, SceneCommand *cmd) {
             break;
         case CMD_SPRITE:
             if (scene->spriteCount < MAX_SPRITES) {
-                snprintf(path, BUFFER_SIZE, "assets/images/%s", cmd->arg2);
+                snprintf(path, BUFFER_SIZE*2, "assets/images/%s", cmd->arg2);
                 Image img = LoadImage(path);
                 int x = cmd->hasPos ? (int)cmd->pos.x : 0;
                 int y = cmd->hasPos ? (int)cmd->pos.y : 0;
@@ -116,7 +116,7 @@ static void ProcessCommand(Scene *scene, SceneCommand *cmd) {
                 StopMusicStream(scene->music); 
                 UnloadMusicStream(scene->music); 
             }
-            snprintf(path, BUFFER_SIZE, "assets/music/%s", cmd->arg1);
+            snprintf(path, BUFFER_SIZE*2, "assets/music/%s", cmd->arg1);
             scene->music = LoadMusicStream(path);
             PlayMusicStream(scene->music);
             if (cmd->hasMusicStart) {
@@ -125,7 +125,7 @@ static void ProcessCommand(Scene *scene, SceneCommand *cmd) {
             scene->hasMusic = true;
             break;
         case CMD_SOUND:
-            snprintf(path, BUFFER_SIZE, "assets/music/%s", cmd->arg1);
+            snprintf(path, BUFFER_SIZE*2, "assets/music/%s", cmd->arg1);
             {
                 Sound s = LoadSound(path);
                 PlaySound(s);
@@ -208,7 +208,6 @@ static void LoadSceneFromFile(Scene *scene, const char *sceneFile) {
                             cmd->hasPos = true;
                         }
                     }
-                    long mark = ftell(fp);
                     if (!fgets(line, BUFFER_SIZE, fp)) break;
                     len = (int)strlen(line);
                     if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
@@ -230,7 +229,6 @@ static void LoadSceneFromFile(Scene *scene, const char *sceneFile) {
                         strcpy(cmd->spriteID, p);
                         cmd->hasSpriteID = true;
                     }
-                    long mark = ftell(fp);
                     if (!fgets(line, BUFFER_SIZE, fp)) break;
                     len = (int)strlen(line);
                     if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
