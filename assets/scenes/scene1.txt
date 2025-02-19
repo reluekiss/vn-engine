@@ -1,6 +1,10 @@
 ::bg
 cat.png
 
+::music
+:start 00:15
+country.mp3
+
 ::text
 :name kitty
 test with no pos

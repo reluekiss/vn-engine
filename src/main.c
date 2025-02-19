@@ -2,13 +2,22 @@
 #include "boundedtext.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdbool.h>
 
 #define BUFFER_SIZE 256
 #define MAX_COMMANDS 50
 #define MAX_OPTIONS 2
 #define MAX_SPRITES 10
 
-typedef enum { CMD_BG, CMD_SPRITE, CMD_MUSIC, CMD_SOUND, CMD_TEXT, CMD_SCENE, CMD_USPRITE } CommandType;
+typedef enum { 
+    CMD_BG, 
+    CMD_SPRITE, 
+    CMD_MUSIC, 
+    CMD_SOUND, 
+    CMD_TEXT, 
+    CMD_SCENE, 
+    CMD_USPRITE 
+} CommandType;
 
 typedef struct {
     char optionText[BUFFER_SIZE];
@@ -17,8 +26,8 @@ typedef struct {
 
 typedef struct {
     CommandType type;
-    char arg1[BUFFER_SIZE];  // For legacy data (position string for sprite, text content, etc.)
-    char arg2[BUFFER_SIZE];  // For filenames
+    char arg1[BUFFER_SIZE];   // For text content or filenames (music, sound)
+    char arg2[BUFFER_SIZE];   // For sprite filename
 
     char name[BUFFER_SIZE];
     bool hasName;
@@ -27,6 +36,9 @@ typedef struct {
 
     char spriteID[BUFFER_SIZE];
     bool hasSpriteID;
+
+    float musicStart;
+    bool hasMusicStart;
 
     int optionCount;
     SceneOption options[MAX_OPTIONS];
@@ -53,17 +65,26 @@ typedef struct {
 } Scene;
 
 static void UnloadSceneAssets(Scene *scene) {
-    if (scene->hasBackground) { UnloadTexture(scene->background); scene->hasBackground = false; }
-    for (int i = 0; i < scene->spriteCount; i++) UnloadTexture(scene->sprites[i].texture);
+    if (scene->hasBackground) { 
+        UnloadTexture(scene->background); 
+        scene->hasBackground = false; 
+    }
+    for (int i = 0; i < scene->spriteCount; i++) {
+        UnloadTexture(scene->sprites[i].texture);
+    }
     scene->spriteCount = 0;
-    if (scene->hasMusic) { StopMusicStream(scene->music); UnloadMusicStream(scene->music); scene->hasMusic = false; }
+    if (scene->hasMusic) { 
+        StopMusicStream(scene->music); 
+        UnloadMusicStream(scene->music); 
+        scene->hasMusic = false; 
+    }
 }
 
 static void ProcessCommand(Scene *scene, SceneCommand *cmd) {
     char path[BUFFER_SIZE];
     switch(cmd->type) {
         case CMD_BG:
-            if (scene->hasBackground) { UnloadTexture(scene->background); }
+            if (scene->hasBackground) UnloadTexture(scene->background);
             snprintf(path, BUFFER_SIZE, "assets/images/%s", cmd->arg1);
             {
                 Image img = LoadImage(path);
@@ -76,10 +97,8 @@ static void ProcessCommand(Scene *scene, SceneCommand *cmd) {
             if (scene->spriteCount < MAX_SPRITES) {
                 snprintf(path, BUFFER_SIZE, "assets/images/%s", cmd->arg2);
                 Image img = LoadImage(path);
-                // Determine position: use extended :pos if provided; otherwise legacy arg1.
-                int x = 0, y = 0;
-                if (cmd->hasPos) { x = (int)cmd->pos.x; y = (int)cmd->pos.y; }
-                else { sscanf(cmd->arg1, "%dx%d", &x, &y); }
+                int x = cmd->hasPos ? (int)cmd->pos.x : 0;
+                int y = cmd->hasPos ? (int)cmd->pos.y : 0;
                 scene->sprites[scene->spriteCount].texture = LoadTextureFromImage(img);
                 UnloadImage(img);
                 scene->sprites[scene->spriteCount].pos = (Vector2){ x, y };
@@ -93,10 +112,16 @@ static void ProcessCommand(Scene *scene, SceneCommand *cmd) {
             }
             break;
         case CMD_MUSIC:
-            if (scene->hasMusic) { StopMusicStream(scene->music); UnloadMusicStream(scene->music); }
+            if (scene->hasMusic) { 
+                StopMusicStream(scene->music); 
+                UnloadMusicStream(scene->music); 
+            }
             snprintf(path, BUFFER_SIZE, "assets/music/%s", cmd->arg1);
             scene->music = LoadMusicStream(path);
             PlayMusicStream(scene->music);
+            if (cmd->hasMusicStart) {
+                SeekMusicStream(scene->music, cmd->musicStart);
+            }
             scene->hasMusic = true;
             break;
         case CMD_SOUND:
@@ -104,7 +129,7 @@ static void ProcessCommand(Scene *scene, SceneCommand *cmd) {
             {
                 Sound s = LoadSound(path);
                 PlaySound(s);
-                // Consider managing sound lifetime if needed.
+                // Manage sound lifetime here.
             }
             break;
         case CMD_USPRITE:
@@ -165,52 +190,40 @@ static void LoadSceneFromFile(Scene *scene, const char *sceneFile) {
             cmd->type = CMD_SPRITE;
             cmd->hasSpriteID = false;
             cmd->hasPos = false;
-            // Peek next line.
             if (fgets(line, BUFFER_SIZE, fp)) {
                 len = (int)strlen(line);
                 if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
-                if(line[0] == ':') {
-                    // Extended format.
-                    do {
-                        if (strncmp(line, ":id", 3)==0) {
-                            char *p = line + 3;
-                            while(*p==' ') p++;
-                            strcpy(cmd->spriteID, p);
-                            cmd->hasSpriteID = true;
-                        } else if (strncmp(line, ":pos", 4)==0) {
-                            char *p = line + 4;
-                            while(*p==' ') p++;
-                            int posX = 0, posY = 0;
-                            if (sscanf(p, "%dx%d", &posX, &posY)==2) {
-                                cmd->pos = (Vector2){ posX, posY };
-                                cmd->hasPos = true;
-                            }
+                while(line[0] == ':') {
+                    if (strncmp(line, ":id", 3)==0) {
+                        char *p = line + 3;
+                        while(*p==' ') p++;
+                        strcpy(cmd->spriteID, p);
+                        cmd->hasSpriteID = true;
+                    } else if (strncmp(line, ":pos", 4)==0) {
+                        char *p = line + 4;
+                        while(*p==' ') p++;
+                        int posX = 0, posY = 0;
+                        if (sscanf(p, "%dx%d", &posX, &posY)==2) {
+                            cmd->pos = (Vector2){ posX, posY };
+                            cmd->hasPos = true;
                         }
-                        long mark = ftell(fp);
-                        if (!fgets(line, BUFFER_SIZE, fp)) break;
-                        len = (int)strlen(line);
-                        if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
-                    } while(line[0] == ':');
-                    strcpy(cmd->arg2, line);
-                } else {
-                    // Legacy format.
-                    strcpy(cmd->arg1, line);
-                    if (fgets(line, BUFFER_SIZE, fp)) {
-                        len = (int)strlen(line);
-                        if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
-                        strcpy(cmd->arg2, line);
                     }
+                    long mark = ftell(fp);
+                    if (!fgets(line, BUFFER_SIZE, fp)) break;
+                    len = (int)strlen(line);
+                    if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
+                    if(line[0] != ':') break;
                 }
+                strcpy(cmd->arg2, line);
             }
         } else if (strncmp(line, "::Usprite", 9)==0) {
             SceneCommand *cmd = &scene->commands[scene->commandCount++];
             cmd->type = CMD_USPRITE;
             cmd->hasSpriteID = false;
-            // Read parameters for unload command.
             if (fgets(line, BUFFER_SIZE, fp)) {
                 len = (int)strlen(line);
                 if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
-                while(line[0]==':') {
+                while(line[0] == ':') {
                     if (strncmp(line, ":id", 3)==0) {
                         char *p = line + 3;
                         while(*p==' ') p++;
@@ -227,9 +240,24 @@ static void LoadSceneFromFile(Scene *scene, const char *sceneFile) {
         } else if (strncmp(line, "::music", 7)==0) {
             SceneCommand *cmd = &scene->commands[scene->commandCount++];
             cmd->type = CMD_MUSIC;
+            cmd->hasMusicStart = false;
             if (fgets(line, BUFFER_SIZE, fp)) {
                 len = (int)strlen(line);
                 if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
+                while(line[0] == ':') {
+                    if (strncmp(line, ":start", 6)==0) {
+                        char *p = line + 6;
+                        while(*p==' ') p++;
+                        int minutes = 0, seconds = 0;
+                        if (sscanf(p, "%d:%d", &minutes, &seconds) == 2) {
+                            cmd->musicStart = minutes * 60 + seconds;
+                            cmd->hasMusicStart = true;
+                        }
+                    }
+                    if (!fgets(line, BUFFER_SIZE, fp)) break;
+                    len = (int)strlen(line);
+                    if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
+                }
                 strcpy(cmd->arg1, line);
             }
         } else if (strncmp(line, "::sound", 7)==0) {
@@ -256,20 +284,19 @@ static void LoadSceneFromFile(Scene *scene, const char *sceneFile) {
                         cmd->hasName = true;
                     } else if (strncmp(line, ":pos", 4)==0) {
                         char *p = line + 4;
-                        while(*p == ' ') p++;
+                        while(*p==' ') p++;
                         int posX = 0, posY = 0;
                         if (sscanf(p, "%dx%d", &posX, &posY)==2) {
                             cmd->pos = (Vector2){ posX, posY };
                             cmd->hasPos = true;
                         }
                     }
-                    long mark = ftell(fp);
-                    if (!fgets(line, BUFFER_SIZE, fp))
-                        break;
+                    if (!fgets(line, BUFFER_SIZE, fp)) break;
                     len = (int)strlen(line);
                     if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
-                    if(line[0] != ':') { strcpy(cmd->arg1, line); break; }
+                    if(line[0] != ':') break;
                 }
+                strcpy(cmd->arg1, line);
             }
         } else if (strncmp(line, "::scene", 7)==0) {
             SceneCommand *cmd = &scene->commands[scene->commandCount++];
@@ -290,7 +317,6 @@ static void LoadSceneFromFile(Scene *scene, const char *sceneFile) {
         }
     }
     fclose(fp);
-    // Process non-waiting commands.
     while (scene->currentCommand < scene->commandCount) {
         SceneCommand *cmd = &scene->commands[scene->currentCommand];
         if (cmd->type == CMD_TEXT || cmd->type == CMD_SCENE)
@@ -314,7 +340,6 @@ int main(void)
     {
         if (scene.hasMusic) UpdateMusicStream(scene.music);
 
-        // Handle waiting commands.
         if (scene.currentCommand < scene.commandCount) {
             SceneCommand *cmd = &scene.commands[scene.currentCommand];
             if (cmd->type == CMD_TEXT) {
