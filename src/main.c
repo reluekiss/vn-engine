@@ -3,12 +3,20 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
+#include <dirent.h>
+
+#ifndef WINDOWS
+#include <dirent.h>
+#else
+#include <windows.h>
+#endif
 
 #define BUFFER_SIZE 256
 #define PATH_BUFFER_SIZE 512
 #define MAX_COMMANDS 256
 #define MAX_OPTIONS 2
 #define MAX_SPRITES 10
+#define MAX_START_OPTIONS 10
 
 typedef enum { 
     TITLE,
@@ -357,6 +365,63 @@ static currentScreen updateScreenState(currentScreen currentScreen, Scene *scene
     }
 }
 
+#ifndef WINDOWS
+
+int GetSceneOptions(const char *directory, char optionTexts[][BUFFER_SIZE], char optionFiles[][BUFFER_SIZE], int maxOptions) {
+    DIR *d;
+    struct dirent *dir;
+    int count = 0;
+    d = opendir(directory);
+    if (!d) return 0;
+    while ((dir = readdir(d)) != NULL && count < maxOptions) {
+        if (dir->d_type == DT_DIR)
+            continue;
+        char *dot = strrchr(dir->d_name, '.');
+        if (dot && strcmp(dot, ".txt") == 0) {
+            strncpy(optionFiles[count], dir->d_name, BUFFER_SIZE);
+            optionFiles[count][BUFFER_SIZE-1] = '\0';
+            char name[BUFFER_SIZE];
+            strncpy(name, dir->d_name, BUFFER_SIZE);
+            name[BUFFER_SIZE-1] = '\0';
+            dot = strrchr(name, '.');
+            if (dot) *dot = '\0';
+            strncpy(optionTexts[count], name, BUFFER_SIZE);
+            optionTexts[count][BUFFER_SIZE-1] = '\0';
+            count++;
+        }
+    }
+    closedir(d);
+    return count;
+}
+
+#else   // WINDOWS version
+
+int GetSceneOptions(const char *directory, char optionTexts[][BUFFER_SIZE], char optionFiles[][BUFFER_SIZE], int maxOptions) {
+    WIN32_FIND_DATA findFileData;
+    char searchPath[PATH_BUFFER_SIZE];
+    snprintf(searchPath, PATH_BUFFER_SIZE, "%s\\*.txt", directory);
+    HANDLE hFind = FindFirstFile(searchPath, &findFileData);
+    int count = 0;
+    if (hFind == INVALID_HANDLE_VALUE) return 0;
+    while (FindNextFile(hFind, &findFileData) && count < maxOptions) {
+        if (!(findFileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+            strncpy(optionFiles[count], findFileData.cFileName, BUFFER_SIZE);
+            optionFiles[count][BUFFER_SIZE-1] = '\0';
+            char name[BUFFER_SIZE];
+            strncpy(name, findFileData.cFileName, BUFFER_SIZE);
+            name[BUFFER_SIZE-1] = '\0';
+            char *dot = strrchr(name, '.');
+            if (dot) *dot = '\0';
+            strncpy(optionTexts[count], name, BUFFER_SIZE);
+            optionTexts[count][BUFFER_SIZE-1] = '\0';
+            count++;
+        }
+    } 
+    FindClose(hFind);
+    return count;
+}
+
+#endif
 
 int main(void)
 {
@@ -366,7 +431,11 @@ int main(void)
 
     currentScreen currentScreen = TITLE;
     Scene scene = {0};
-    LoadSceneFromFile(&scene, "scene1.txt");
+
+    static bool showStartDialog = false;
+    static char startOptionTexts[MAX_START_OPTIONS][BUFFER_SIZE];
+    static char startOptionFiles[MAX_START_OPTIONS][BUFFER_SIZE];
+    static int numStartOptions = 0;
 
     SetTargetFPS(60);
     while (!WindowShouldClose())
@@ -380,25 +449,6 @@ int main(void)
                     scene.currentCommand++;
                     ProcessAutoCommands(&scene);
                 }
-            } else if (cmd->type == CMD_SCENE) {
-                Rectangle dialog = { GetScreenWidth()/2 - 200, GetScreenHeight()/2 - 100, 400, 200 };
-                int optWidth = (dialog.width - 60) / MAX_OPTIONS;
-                Rectangle optRects[MAX_OPTIONS];
-                for (int i = 0; i < cmd->optionCount; i++) {
-                    optRects[i].x = dialog.x + 20 + i * (optWidth + 20);
-                    optRects[i].y = dialog.y + 50;
-                    optRects[i].width = optWidth;
-                    optRects[i].height = 50;
-                }
-                Vector2 mousePoint = GetMousePosition();
-                if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-                    for (int i = 0; i < cmd->optionCount; i++) {
-                        if (CheckCollisionPointRec(mousePoint, optRects[i])) {
-                            LoadSceneFromFile(&scene, cmd->options[i].nextScene);
-                            break;
-                        }
-                    }
-                }
             }
         }
         currentScreen = updateScreenState(currentScreen, &scene);
@@ -408,10 +458,47 @@ int main(void)
 
         switch (currentScreen) {
             case TITLE:
-                // TODO: Draw TITLE screen here!
+            {
                 DrawText("TITLE SCREEN", 20, 20, 40, DARKGREEN);
-                DrawText("PRESS SPACE JUMP to GAMEPLAY SCREEN", 120, 220, 20, DARKGREEN);
-                break;
+            
+                Rectangle startButton = { GetScreenWidth()/2 - 130, GetScreenHeight()/2, 260, 50 };
+                DrawRectangleRec(startButton, BLUE);
+                DrawText("Choose Starting Scene", startButton.x + 10, startButton.y + 15, 20, WHITE);
+            
+                if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) && CheckCollisionPointRec(GetMousePosition(), startButton))
+                {
+                    numStartOptions = GetSceneOptions("assets/scenes", startOptionTexts, startOptionFiles, MAX_START_OPTIONS);
+                    showStartDialog = true;
+                }
+            
+                if (showStartDialog)
+                {
+                    Rectangle dialog = { GetScreenWidth()/2 - 200, GetScreenHeight()/2 - 150, 400, 300 };
+                    DrawRectangleRec(dialog, Fade(DARKGRAY, 0.8f));
+                    DrawRectangleLinesEx(dialog, 2, WHITE);
+                    int padding = 10;
+                    int fontSize = 20;
+                    Vector2 mousePoint = GetMousePosition();
+                    for (int i = 0; i < numStartOptions; i++)
+                    {
+                        int textWidth = MeasureText(startOptionTexts[i], fontSize);
+                        int textHeight = fontSize;
+                        float optX = dialog.x + (dialog.width - (textWidth + 2 * padding)) / 2.0f;
+                        float optY = dialog.y + 50 + i * (textHeight + 2 * padding + 10);
+                        Rectangle optRect = { optX, optY, textWidth + 2 * padding, textHeight + 2 * padding };
+                        DrawRectangleRec(optRect, Fade(LIGHTGRAY, 0.8f));
+                        DrawRectangleLinesEx(optRect, 2, WHITE);
+                        DrawText(startOptionTexts[i], optRect.x + padding, optRect.y + padding, fontSize, BLACK);
+                        if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) && CheckCollisionPointRec(mousePoint, optRect))
+                        {
+                            LoadSceneFromFile(&scene, startOptionFiles[i]);
+                            currentScreen = GAMEPLAY;
+                            showStartDialog = false;
+                        }
+                    }
+                }
+            }
+            break;
             case GAMEPLAY:
             ClearBackground(RAYWHITE);
             if (scene.hasBackground) {
@@ -474,17 +561,26 @@ int main(void)
                     Rectangle dialog = { GetScreenWidth()/2 - 200, GetScreenHeight()/2 - 100, 400, 200 };
                     DrawRectangleRec(dialog, Fade(DARKGRAY, 0.8f));
                     DrawRectangleLinesEx(dialog, 2, WHITE);
-                    int optWidth = (dialog.width - 60) / MAX_OPTIONS;
+                    int padding = 10;
+                    int fontSize = 20;
+                    Vector2 mousePoint = GetMousePosition();
                     for (int i = 0; i < cmd->optionCount; i++) {
-                        Rectangle optRect = { dialog.x + 20 + i * (optWidth + 20), dialog.y + 50, optWidth, 50 };
+                        int textWidth = MeasureText(cmd->options[i].optionText, fontSize);
+                        int textHeight = fontSize;
+                        float optX = dialog.x + (dialog.width - (textWidth + 2 * padding)) / 2.0f;
+                        float optY = dialog.y + 50 + i * (textHeight + 2 * padding + 10);
+                        Rectangle optRect = { optX, optY, textWidth + 2 * padding, textHeight + 2 * padding };
                         DrawRectangleRec(optRect, Fade(LIGHTGRAY, 0.8f));
                         DrawRectangleLinesEx(optRect, 2, WHITE);
-                        DrawText(cmd->options[i].optionText, optRect.x + 10, optRect.y + 15, 20, BLACK);
+                        DrawText(cmd->options[i].optionText, optRect.x + padding, optRect.y + padding, fontSize, BLACK);
+
+                        if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) && CheckCollisionPointRec(mousePoint, optRect)) {
+                            LoadSceneFromFile(&scene, cmd->options[i].nextScene);
+                            break;
+                        }
                     }
-                }
-            }
-            break;
-            default: break;
+                } break;
+            } default: break;
         }
         EndDrawing();
     }

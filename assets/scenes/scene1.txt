@@ -36,6 +36,6 @@ pirate.jpg
 
 ::scene
 option 1
-scene2.txt
+Test Module/scene2.txt
 option 2
-scene3.txt
+Test Module/scene3.txt

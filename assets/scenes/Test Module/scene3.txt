@@ -1,0 +1,14 @@
+::text
+:name kitty
+:pos
+hi this is scene 3
+
+::sound
+hey.mp3
+
+::text
+:name kitty
+:pos
+lets go
+
+::end

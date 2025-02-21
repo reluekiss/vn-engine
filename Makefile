@@ -11,7 +11,7 @@ else ifeq ($(PLATFORM), darwin)
 else ifeq ($(PLATFORM), windows)
     CC = gcc
     LIBS = -lraylib -lm -lgdi32 -lwinmm
-    CFLAGS = -O3 -g -Wall -Wextra
+    CFLAGS = -DWINDOWS -O3 -g -Wall -Wextra
 else
     $(error Unsupported platform: $(PLATFORM))
 endif
