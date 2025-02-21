@@ -179,9 +179,9 @@ static int DrawVerticalOptions(Rectangle dialog, int numOptions, char optionText
 }
 
 static void DrawTextDialog(SceneCommand *cmd, int baseWidth, int baseHeight) {
-    const float defaultXRel = 20.0f / (float)baseWidth;
+    const float defaultXRel = 60.0f / (float)baseWidth;
     const float defaultYRel = 330.0f / (float)baseHeight;
-    const float defaultWidthRel = 760.0f / (float)baseWidth;
+    const float defaultWidthRel = 685.0f / (float)baseWidth;
     const float defaultHeightRel = 100.0f / (float)baseHeight;
     Rectangle textBox;
     if (cmd->hasPos) {
