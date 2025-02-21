@@ -15,4 +15,5 @@ typedef struct {
     SceneOption options[MAX_OPTIONS];
 } SceneCommand;
 ```
-use the above SceneCommand type to refactor the LoadSceneFromFile function, which just needs quite a bit of work ;-;
+- use the above SceneCommand type to refactor the LoadSceneFromFile function, which just needs quite a bit of work ;-;
+- make a proper AST for the commands so that you can do scripting

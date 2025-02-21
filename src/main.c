@@ -73,6 +73,7 @@ typedef struct {
         bool hasID;
     } sprites[MAX_SPRITES];
     int spriteCount;
+    Shader spriteOutline;
 
     Music music;
     bool hasMusic;
@@ -135,6 +136,12 @@ int GetSceneOptions(const char *directory, char optionTexts[][BUFFER_SIZE], char
 }
 #endif
 
+#if defined(PLATFORM_DESKTOP)
+    #define GLSL_VERSION            330
+#else   // PLATFORM_ANDROID, PLATFORM_WEB
+    #define GLSL_VERSION            100
+#endif
+
 static void DrawBackgroundAndSprites(Scene *scene) {
     if (scene->hasBackground) {
         Texture2D bgTex = scene->background;
@@ -147,14 +154,28 @@ static void DrawBackgroundAndSprites(Scene *scene) {
         Rectangle dstRect = { 0, 0, (float)windowWidth, (float)windowHeight };
         DrawTexturePro(bgTex, srcRect, dstRect, (Vector2){0, 0}, 0.0f, WHITE);
 
+        float outlineSize = 8.0f;
+        float outlineColor[4] = { 0.2f, 0.2f, 0.2f, 0.2f };
+
         for (int i = 0; i < scene->spriteCount; i++) {
             Texture2D sprTex = scene->sprites[i].texture;
             float drawn_x = (scene->sprites[i].pos.x - crop_x) * scale_bg;
             float drawn_y = scene->sprites[i].pos.y * scale_bg;
-            float sprite_scale = (windowHeight) / (float)sprTex.height;
+            float sprite_scale = (4.0/3.0 * windowHeight) / (float)sprTex.height;
             Rectangle sprSrc = { 0, 0, (float)sprTex.width, (float)sprTex.height };
             Rectangle sprDst = { drawn_x, drawn_y, sprTex.width * sprite_scale, sprTex.height * sprite_scale };
+
+            float textureSize[2] = { (float)sprTex.width, (float)sprTex.height };
+            int outlineSizeLoc = GetShaderLocation(scene->spriteOutline, "outlineSize");
+            int outlineColorLoc = GetShaderLocation(scene->spriteOutline, "outlineColor");
+            int textureSizeLoc = GetShaderLocation(scene->spriteOutline, "textureSize");
+            SetShaderValue(scene->spriteOutline, outlineSizeLoc, &outlineSize, SHADER_UNIFORM_FLOAT);
+            SetShaderValue(scene->spriteOutline, outlineColorLoc, outlineColor, SHADER_UNIFORM_VEC4);
+            SetShaderValue(scene->spriteOutline, textureSizeLoc, textureSize, SHADER_UNIFORM_VEC2);
+
+            BeginShaderMode(scene->spriteOutline);
             DrawTexturePro(sprTex, sprSrc, sprDst, (Vector2){0, 0}, 0.0f, WHITE);
+            EndShaderMode();
         }
     }
 }
@@ -217,20 +238,16 @@ static void ProcessCommand(Scene *scene, SceneCommand *cmd) {
             if (scene->hasBackground) UnloadTexture(scene->background);
             snprintf(path, PATH_BUFFER_SIZE, "assets/images/%s", cmd->arg1);
             {
-                Image img = LoadImage(path);
-                scene->background = LoadTextureFromImage(img);
-                UnloadImage(img);
+                scene->background = LoadTexture(path);
                 scene->hasBackground = true;
             }
             break;
         case CMD_SPRITE:
             if (scene->spriteCount < MAX_SPRITES) {
                 snprintf(path, PATH_BUFFER_SIZE, "assets/images/%s", cmd->arg2);
-                Image img = LoadImage(path);
                 int x = cmd->hasPos ? (int)cmd->pos.x : 0;
                 int y = cmd->hasPos ? (int)cmd->pos.y : 0;
-                scene->sprites[scene->spriteCount].texture = LoadTextureFromImage(img);
-                UnloadImage(img);
+                scene->sprites[scene->spriteCount].texture = LoadTexture(path);
                 scene->sprites[scene->spriteCount].pos = (Vector2){ x, y };
                 if (cmd->hasSpriteID) {
                     strcpy(scene->sprites[scene->spriteCount].id, cmd->spriteID);
@@ -465,6 +482,7 @@ int main(void)
 
     Scene scene = {0};
     scene.screen = TITLE;
+    scene.spriteOutline = LoadShader(0, TextFormat("assets/shaders/outline-%i.fs", GLSL_VERSION));
 
     static bool showStartDialog = false;
     static char startOptionTexts[MAX_START_OPTIONS][BUFFER_SIZE];
