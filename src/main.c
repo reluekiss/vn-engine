@@ -1,13 +1,19 @@
 #include "raylib.h"
-#include "boundedtext.h"
+#include "boundedtext.h"  
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
 
 #define BUFFER_SIZE 256
-#define MAX_COMMANDS 50
+#define PATH_BUFFER_SIZE 512
+#define MAX_COMMANDS 256
 #define MAX_OPTIONS 2
 #define MAX_SPRITES 10
+
+typedef enum { 
+    TITLE,
+    GAMEPLAY,
+} currentScreen;
 
 typedef enum { 
     CMD_BG, 
@@ -16,7 +22,8 @@ typedef enum {
     CMD_SOUND, 
     CMD_TEXT, 
     CMD_SCENE, 
-    CMD_USPRITE 
+    CMD_USPRITE,
+    CMD_END
 } CommandType;
 
 typedef struct {
@@ -26,8 +33,8 @@ typedef struct {
 
 typedef struct {
     CommandType type;
-    char arg1[BUFFER_SIZE];   // For text content or filenames (music, sound)
-    char arg2[BUFFER_SIZE];   // For sprite filename
+    char arg1[BUFFER_SIZE];   
+    char arg2[BUFFER_SIZE];   
 
     char name[BUFFER_SIZE];
     bool hasName;
@@ -62,6 +69,9 @@ typedef struct {
 
     Music music;
     bool hasMusic;
+    
+    bool gameFlag;
+    bool endFlag;
 } Scene;
 
 static void UnloadSceneAssets(Scene *scene) {
@@ -81,11 +91,11 @@ static void UnloadSceneAssets(Scene *scene) {
 }
 
 static void ProcessCommand(Scene *scene, SceneCommand *cmd) {
-    char path[BUFFER_SIZE*2];
+    char path[PATH_BUFFER_SIZE];
     switch(cmd->type) {
         case CMD_BG:
             if (scene->hasBackground) UnloadTexture(scene->background);
-            snprintf(path, BUFFER_SIZE*2, "assets/images/%s", cmd->arg1);
+            snprintf(path, PATH_BUFFER_SIZE, "assets/images/%s", cmd->arg1);
             {
                 Image img = LoadImage(path);
                 scene->background = LoadTextureFromImage(img);
@@ -95,7 +105,7 @@ static void ProcessCommand(Scene *scene, SceneCommand *cmd) {
             break;
         case CMD_SPRITE:
             if (scene->spriteCount < MAX_SPRITES) {
-                snprintf(path, BUFFER_SIZE*2, "assets/images/%s", cmd->arg2);
+                snprintf(path, PATH_BUFFER_SIZE, "assets/images/%s", cmd->arg2);
                 Image img = LoadImage(path);
                 int x = cmd->hasPos ? (int)cmd->pos.x : 0;
                 int y = cmd->hasPos ? (int)cmd->pos.y : 0;
@@ -116,7 +126,7 @@ static void ProcessCommand(Scene *scene, SceneCommand *cmd) {
                 StopMusicStream(scene->music); 
                 UnloadMusicStream(scene->music); 
             }
-            snprintf(path, BUFFER_SIZE*2, "assets/music/%s", cmd->arg1);
+            snprintf(path, PATH_BUFFER_SIZE, "assets/music/%s", cmd->arg1);
             scene->music = LoadMusicStream(path);
             PlayMusicStream(scene->music);
             if (cmd->hasMusicStart) {
@@ -125,11 +135,11 @@ static void ProcessCommand(Scene *scene, SceneCommand *cmd) {
             scene->hasMusic = true;
             break;
         case CMD_SOUND:
-            snprintf(path, BUFFER_SIZE*2, "assets/music/%s", cmd->arg1);
+            snprintf(path, PATH_BUFFER_SIZE, "assets/music/%s", cmd->arg1);
             {
                 Sound s = LoadSound(path);
                 PlaySound(s);
-                // Manage sound lifetime here.
+                // Manage sound lifetime.
             }
             break;
         case CMD_USPRITE:
@@ -150,6 +160,9 @@ static void ProcessCommand(Scene *scene, SceneCommand *cmd) {
         case CMD_SCENE:
             // Wait for user selection.
             break;
+        case CMD_END:
+            scene->endFlag = true;
+            break;
     }
 }
 
@@ -163,12 +176,12 @@ static void ProcessAutoCommands(Scene *scene) {
 }
 
 static void LoadSceneFromFile(Scene *scene, const char *sceneFile) {
-    UnloadSceneAssets(scene);
+    // UnloadSceneAssets(scene);
     scene->commandCount = 0;
     scene->currentCommand = 0;
     FILE *fp;
-    char path[BUFFER_SIZE];
-    snprintf(path, BUFFER_SIZE, "assets/scenes/%s", sceneFile);
+    char path[PATH_BUFFER_SIZE];
+    snprintf(path, PATH_BUFFER_SIZE, "assets/scenes/%s", sceneFile);
     fp = fopen(path, "r");
     if (!fp) return;
     char line[BUFFER_SIZE];
@@ -196,12 +209,12 @@ static void LoadSceneFromFile(Scene *scene, const char *sceneFile) {
                 while(line[0] == ':') {
                     if (strncmp(line, ":id", 3)==0) {
                         char *p = line + 3;
-                        while(*p==' ') p++;
+                        while(*p ==' ') p++;
                         strcpy(cmd->spriteID, p);
                         cmd->hasSpriteID = true;
                     } else if (strncmp(line, ":pos", 4)==0) {
                         char *p = line + 4;
-                        while(*p==' ') p++;
+                        while(*p ==' ') p++;
                         int posX = 0, posY = 0;
                         if (sscanf(p, "%dx%d", &posX, &posY)==2) {
                             cmd->pos = (Vector2){ posX, posY };
@@ -225,7 +238,7 @@ static void LoadSceneFromFile(Scene *scene, const char *sceneFile) {
                 while(line[0] == ':') {
                     if (strncmp(line, ":id", 3)==0) {
                         char *p = line + 3;
-                        while(*p==' ') p++;
+                        while(*p ==' ') p++;
                         strcpy(cmd->spriteID, p);
                         cmd->hasSpriteID = true;
                     }
@@ -245,7 +258,7 @@ static void LoadSceneFromFile(Scene *scene, const char *sceneFile) {
                 while(line[0] == ':') {
                     if (strncmp(line, ":start", 6)==0) {
                         char *p = line + 6;
-                        while(*p==' ') p++;
+                        while(*p == ' ') p++;
                         int minutes = 0, seconds = 0;
                         if (sscanf(p, "%d:%d", &minutes, &seconds) == 2) {
                             cmd->musicStart = minutes * 60 + seconds;
@@ -282,7 +295,7 @@ static void LoadSceneFromFile(Scene *scene, const char *sceneFile) {
                         cmd->hasName = true;
                     } else if (strncmp(line, ":pos", 4)==0) {
                         char *p = line + 4;
-                        while(*p==' ') p++;
+                        while(*p == ' ') p++;
                         int posX = 0, posY = 0;
                         if (sscanf(p, "%dx%d", &posX, &posY)==2) {
                             cmd->pos = (Vector2){ posX, posY };
@@ -312,6 +325,9 @@ static void LoadSceneFromFile(Scene *scene, const char *sceneFile) {
                 strcpy(cmd->options[cmd->optionCount].nextScene, line);
                 cmd->optionCount++;
             }
+        } else if (strncmp(line, "::end", 5)==0) {
+            SceneCommand *cmd = &scene->commands[scene->commandCount++];
+            cmd->type = CMD_END;
         }
     }
     fclose(fp);
@@ -324,12 +340,31 @@ static void LoadSceneFromFile(Scene *scene, const char *sceneFile) {
     }
 }
 
+static currentScreen updateScreenState(currentScreen currentScreen, Scene *scene)
+{
+    switch(currentScreen) {
+        case TITLE:
+            scene->endFlag = false;
+            if (IsKeyPressed(KEY_SPACE)) currentScreen = GAMEPLAY;
+            return currentScreen;
+        case GAMEPLAY:
+            if (scene->endFlag) {
+                UnloadSceneAssets(scene);
+                currentScreen = TITLE;
+            }
+            return currentScreen;
+        default: return currentScreen;
+    }
+}
+
+
 int main(void)
 {
     const int baseWidth = 800, baseHeight = 450;
-    InitWindow(baseWidth, baseHeight, "raylib scene system with text params");
+    InitWindow(baseWidth, baseHeight, "vn-engine");
     InitAudioDevice();
 
+    currentScreen currentScreen = TITLE;
     Scene scene = {0};
     LoadSceneFromFile(&scene, "scene1.txt");
 
@@ -366,13 +401,42 @@ int main(void)
                 }
             }
         }
+        currentScreen = updateScreenState(currentScreen, &scene);
 
         BeginDrawing();
+        ClearBackground(RAYWHITE);
+
+        switch (currentScreen) {
+            case TITLE:
+                // TODO: Draw TITLE screen here!
+                DrawText("TITLE SCREEN", 20, 20, 40, DARKGREEN);
+                DrawText("PRESS SPACE JUMP to GAMEPLAY SCREEN", 120, 220, 20, DARKGREEN);
+                break;
+            case GAMEPLAY:
             ClearBackground(RAYWHITE);
-            if (scene.hasBackground)
-                DrawTexture(scene.background, 0, 0, WHITE);
-            for (int i = 0; i < scene.spriteCount; i++)
-                DrawTexture(scene.sprites[i].texture, (int)scene.sprites[i].pos.x, (int)scene.sprites[i].pos.y, WHITE);
+            if (scene.hasBackground) {
+                Texture2D bgTex = scene.background;
+                int windowWidth = GetScreenWidth();
+                int windowHeight = GetScreenHeight();
+                float scale_bg = (float)windowHeight / (float)bgTex.height;
+                float desired_tex_width = (float)windowWidth / scale_bg;
+                float crop_x = (bgTex.width - desired_tex_width) / 2.0f;
+
+                Rectangle srcRect = { crop_x, 0, desired_tex_width, (float)bgTex.height };
+                Rectangle dstRect = { 0, 0, (float)windowWidth, (float)windowHeight };
+                DrawTexturePro(bgTex, srcRect, dstRect, (Vector2){0, 0}, 0.0f, WHITE);
+
+                for (int i = 0; i < scene.spriteCount; i++) {
+                    Texture2D sprTex = scene.sprites[i].texture;
+                    // Transform sprite position from background texture coordinates to window coordinates.
+                    float drawn_x = (scene.sprites[i].pos.x - crop_x) * scale_bg;
+                    float drawn_y = scene.sprites[i].pos.y * scale_bg;
+                    float sprite_scale = (windowHeight) / (float)sprTex.height;
+                    Rectangle srcRect = { 0, 0, (float)sprTex.width, (float)sprTex.height };
+                    Rectangle dstRect = { drawn_x, drawn_y, sprTex.width * sprite_scale, sprTex.height * sprite_scale };
+                    DrawTexturePro(sprTex, srcRect, dstRect, (Vector2){0, 0}, 0.0f, WHITE);
+                }
+            }
 
             if (scene.currentCommand < scene.commandCount) {
                 SceneCommand *cmd = &scene.commands[scene.currentCommand];
@@ -393,7 +457,7 @@ int main(void)
                     }
                     textBox.width = defaultWidthRel * GetScreenWidth();
                     textBox.height = defaultHeightRel * GetScreenHeight();
-
+                    
                     int textPadding = 10;
                     Rectangle innerBox = { 
                         textBox.x + textPadding, 
@@ -419,9 +483,11 @@ int main(void)
                     }
                 }
             }
+            break;
+            default: break;
+        }
         EndDrawing();
     }
-
     UnloadSceneAssets(&scene);
     CloseAudioDevice();
     CloseWindow();
