@@ -3,7 +3,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
-#include <dirent.h>
 
 #ifndef WINDOWS
 #include <dirent.h>
@@ -78,24 +77,137 @@ typedef struct {
     Music music;
     bool hasMusic;
     
-    bool gameFlag;
-    bool endFlag;
+    currentScreen screen;
 } Scene;
 
-static void UnloadSceneAssets(Scene *scene) {
-    if (scene->hasBackground) { 
-        UnloadTexture(scene->background); 
-        scene->hasBackground = false; 
+#ifndef WINDOWS
+int GetSceneOptions(const char *directory, char optionTexts[][BUFFER_SIZE], char optionFiles[][BUFFER_SIZE], int maxOptions) {
+    DIR *d;
+    struct dirent *dir;
+    int count = 0;
+    d = opendir(directory);
+    if (!d) return 0;
+    while ((dir = readdir(d)) != NULL && count < maxOptions) {
+        if (dir->d_type == DT_DIR)
+            continue;
+        char *dot = strrchr(dir->d_name, '.');
+        if (dot && strcmp(dot, ".txt") == 0) {
+            strncpy(optionFiles[count], dir->d_name, BUFFER_SIZE);
+            optionFiles[count][BUFFER_SIZE-1] = '\0';
+            char name[BUFFER_SIZE];
+            strncpy(name, dir->d_name, BUFFER_SIZE);
+            name[BUFFER_SIZE-1] = '\0';
+            dot = strrchr(name, '.');
+            if (dot) *dot = '\0';
+            strncpy(optionTexts[count], name, BUFFER_SIZE);
+            optionTexts[count][BUFFER_SIZE-1] = '\0';
+            count++;
+        }
     }
-    for (int i = 0; i < scene->spriteCount; i++) {
-        UnloadTexture(scene->sprites[i].texture);
+    closedir(d);
+    return count;
+}
+#else
+#include <windows.h>
+int GetSceneOptions(const char *directory, char optionTexts[][BUFFER_SIZE], char optionFiles[][BUFFER_SIZE], int maxOptions) {
+    WIN32_FIND_DATA findFileData;
+    char searchPath[PATH_BUFFER_SIZE];
+    snprintf(searchPath, PATH_BUFFER_SIZE, "%s\\*.txt", directory);
+    HANDLE hFind = FindFirstFile(searchPath, &findFileData);
+    int count = 0;
+    if (hFind == INVALID_HANDLE_VALUE) return 0;
+    do {
+        if (!(findFileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+            strncpy(optionFiles[count], findFileData.cFileName, BUFFER_SIZE);
+            optionFiles[count][BUFFER_SIZE-1] = '\0';
+            char name[BUFFER_SIZE];
+            strncpy(name, findFileData.cFileName, BUFFER_SIZE);
+            name[BUFFER_SIZE-1] = '\0';
+            char *dot = strrchr(name, '.');
+            if (dot) *dot = '\0';
+            strncpy(optionTexts[count], name, BUFFER_SIZE);
+            optionTexts[count][BUFFER_SIZE-1] = '\0';
+            count++;
+        }
+    } while (FindNextFile(hFind, &findFileData) && count < maxOptions);
+    FindClose(hFind);
+    return count;
+}
+#endif
+
+static void DrawBackgroundAndSprites(Scene *scene) {
+    if (scene->hasBackground) {
+        Texture2D bgTex = scene->background;
+        int windowWidth = GetScreenWidth();
+        int windowHeight = GetScreenHeight();
+        float scale_bg = (float)windowHeight / (float)bgTex.height;
+        float desired_tex_width = (float)windowWidth / scale_bg;
+        float crop_x = (bgTex.width - desired_tex_width) / 2.0f;
+        Rectangle srcRect = { crop_x, 0, desired_tex_width, (float)bgTex.height };
+        Rectangle dstRect = { 0, 0, (float)windowWidth, (float)windowHeight };
+        DrawTexturePro(bgTex, srcRect, dstRect, (Vector2){0, 0}, 0.0f, WHITE);
+
+        for (int i = 0; i < scene->spriteCount; i++) {
+            Texture2D sprTex = scene->sprites[i].texture;
+            float drawn_x = (scene->sprites[i].pos.x - crop_x) * scale_bg;
+            float drawn_y = scene->sprites[i].pos.y * scale_bg;
+            float sprite_scale = (windowHeight) / (float)sprTex.height;
+            Rectangle sprSrc = { 0, 0, (float)sprTex.width, (float)sprTex.height };
+            Rectangle sprDst = { drawn_x, drawn_y, sprTex.width * sprite_scale, sprTex.height * sprite_scale };
+            DrawTexturePro(sprTex, sprSrc, sprDst, (Vector2){0, 0}, 0.0f, WHITE);
+        }
     }
-    scene->spriteCount = 0;
-    if (scene->hasMusic) { 
-        StopMusicStream(scene->music); 
-        UnloadMusicStream(scene->music); 
-        scene->hasMusic = false; 
+}
+
+static int DrawVerticalOptions(Rectangle dialog, int numOptions, char optionTexts[][BUFFER_SIZE], int fontSize, int padding) {
+    Vector2 mousePoint = GetMousePosition();
+    int clickedOption = -1;
+    for (int i = 0; i < numOptions; i++) {
+        int textWidth = MeasureText(optionTexts[i], fontSize);
+        int textHeight = fontSize;
+        float optX = dialog.x + (dialog.width - (textWidth + 2 * padding)) / 2.0f;
+        float optY = dialog.y + 50 + i * (textHeight + 2 * padding + 10);
+        Rectangle optRect = { optX, optY, textWidth + 2 * padding, textHeight + 2 * padding };
+        DrawRectangleRec(optRect, Fade(LIGHTGRAY, 0.8f));
+        DrawRectangleLinesEx(optRect, 2, WHITE);
+        DrawText(optionTexts[i], optRect.x + padding, optRect.y + padding, fontSize, BLACK);
+        if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) && CheckCollisionPointRec(mousePoint, optRect)) {
+            clickedOption = i;
+        }
     }
+    return clickedOption;
+}
+
+static void DrawTextDialog(SceneCommand *cmd, int baseWidth, int baseHeight) {
+    const float defaultXRel = 20.0f / (float)baseWidth;
+    const float defaultYRel = 330.0f / (float)baseHeight;
+    const float defaultWidthRel = 760.0f / (float)baseWidth;
+    const float defaultHeightRel = 100.0f / (float)baseHeight;
+    Rectangle textBox;
+    if (cmd->hasPos) {
+        float xRel = cmd->pos.x / (float)baseWidth;
+        float yRel = cmd->pos.y / (float)baseHeight;
+        textBox.x = xRel * GetScreenWidth();
+        textBox.y = yRel * GetScreenHeight();
+    } else {
+        textBox.x = defaultXRel * GetScreenWidth();
+        textBox.y = defaultYRel * GetScreenHeight();
+    }
+    textBox.width = defaultWidthRel * GetScreenWidth();
+    textBox.height = defaultHeightRel * GetScreenHeight();
+    
+    int textPadding = 10;
+    Rectangle innerBox = { 
+        textBox.x + textPadding, 
+        textBox.y + textPadding, 
+        textBox.width - 2 * textPadding, 
+        textBox.height - 2 * textPadding 
+    };
+    
+    DrawRectangleRec(textBox, Fade(BLACK, 0.5f));
+    if (cmd->hasName)
+        DrawText(cmd->name, textBox.x + 5, textBox.y - 25, 20, WHITE);
+    DrawTextBoxed(GetFontDefault(), cmd->arg1, innerBox, 20, 2, true, WHITE);
 }
 
 static void ProcessCommand(Scene *scene, SceneCommand *cmd) {
@@ -147,7 +259,6 @@ static void ProcessCommand(Scene *scene, SceneCommand *cmd) {
             {
                 Sound s = LoadSound(path);
                 PlaySound(s);
-                // Manage sound lifetime.
             }
             break;
         case CMD_USPRITE:
@@ -163,13 +274,11 @@ static void ProcessCommand(Scene *scene, SceneCommand *cmd) {
             }
             break;
         case CMD_TEXT:
-            // Wait for user input.
             break;
         case CMD_SCENE:
-            // Wait for user selection.
             break;
         case CMD_END:
-            scene->endFlag = true;
+            scene->screen = TITLE;
             break;
     }
 }
@@ -183,8 +292,8 @@ static void ProcessAutoCommands(Scene *scene) {
     }
 }
 
+// TODO: there must be a way to refactor this into something more reasonable
 static void LoadSceneFromFile(Scene *scene, const char *sceneFile) {
-    // UnloadSceneAssets(scene);
     scene->commandCount = 0;
     scene->currentCommand = 0;
     FILE *fp;
@@ -348,89 +457,14 @@ static void LoadSceneFromFile(Scene *scene, const char *sceneFile) {
     }
 }
 
-static currentScreen updateScreenState(currentScreen currentScreen, Scene *scene)
-{
-    switch(currentScreen) {
-        case TITLE:
-            scene->endFlag = false;
-            if (IsKeyPressed(KEY_SPACE)) currentScreen = GAMEPLAY;
-            return currentScreen;
-        case GAMEPLAY:
-            if (scene->endFlag) {
-                UnloadSceneAssets(scene);
-                currentScreen = TITLE;
-            }
-            return currentScreen;
-        default: return currentScreen;
-    }
-}
-
-#ifndef WINDOWS
-
-int GetSceneOptions(const char *directory, char optionTexts[][BUFFER_SIZE], char optionFiles[][BUFFER_SIZE], int maxOptions) {
-    DIR *d;
-    struct dirent *dir;
-    int count = 0;
-    d = opendir(directory);
-    if (!d) return 0;
-    while ((dir = readdir(d)) != NULL && count < maxOptions) {
-        if (dir->d_type == DT_DIR)
-            continue;
-        char *dot = strrchr(dir->d_name, '.');
-        if (dot && strcmp(dot, ".txt") == 0) {
-            strncpy(optionFiles[count], dir->d_name, BUFFER_SIZE);
-            optionFiles[count][BUFFER_SIZE-1] = '\0';
-            char name[BUFFER_SIZE];
-            strncpy(name, dir->d_name, BUFFER_SIZE);
-            name[BUFFER_SIZE-1] = '\0';
-            dot = strrchr(name, '.');
-            if (dot) *dot = '\0';
-            strncpy(optionTexts[count], name, BUFFER_SIZE);
-            optionTexts[count][BUFFER_SIZE-1] = '\0';
-            count++;
-        }
-    }
-    closedir(d);
-    return count;
-}
-
-#else   // WINDOWS version
-
-int GetSceneOptions(const char *directory, char optionTexts[][BUFFER_SIZE], char optionFiles[][BUFFER_SIZE], int maxOptions) {
-    WIN32_FIND_DATA findFileData;
-    char searchPath[PATH_BUFFER_SIZE];
-    snprintf(searchPath, PATH_BUFFER_SIZE, "%s\\*.txt", directory);
-    HANDLE hFind = FindFirstFile(searchPath, &findFileData);
-    int count = 0;
-    if (hFind == INVALID_HANDLE_VALUE) return 0;
-    while (FindNextFile(hFind, &findFileData) && count < maxOptions) {
-        if (!(findFileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-            strncpy(optionFiles[count], findFileData.cFileName, BUFFER_SIZE);
-            optionFiles[count][BUFFER_SIZE-1] = '\0';
-            char name[BUFFER_SIZE];
-            strncpy(name, findFileData.cFileName, BUFFER_SIZE);
-            name[BUFFER_SIZE-1] = '\0';
-            char *dot = strrchr(name, '.');
-            if (dot) *dot = '\0';
-            strncpy(optionTexts[count], name, BUFFER_SIZE);
-            optionTexts[count][BUFFER_SIZE-1] = '\0';
-            count++;
-        }
-    } 
-    FindClose(hFind);
-    return count;
-}
-
-#endif
-
 int main(void)
 {
     const int baseWidth = 800, baseHeight = 450;
     InitWindow(baseWidth, baseHeight, "vn-engine");
     InitAudioDevice();
 
-    currentScreen currentScreen = TITLE;
     Scene scene = {0};
+    scene.screen = TITLE;
 
     static bool showStartDialog = false;
     static char startOptionTexts[MAX_START_OPTIONS][BUFFER_SIZE];
@@ -451,140 +485,65 @@ int main(void)
                 }
             }
         }
-        currentScreen = updateScreenState(currentScreen, &scene);
 
         BeginDrawing();
         ClearBackground(RAYWHITE);
 
-        switch (currentScreen) {
+        switch (scene.screen) {
             case TITLE:
             {
                 DrawText("TITLE SCREEN", 20, 20, 40, DARKGREEN);
-            
                 Rectangle startButton = { GetScreenWidth()/2 - 130, GetScreenHeight()/2, 260, 50 };
                 DrawRectangleRec(startButton, BLUE);
                 DrawText("Choose Starting Scene", startButton.x + 10, startButton.y + 15, 20, WHITE);
-            
                 if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) && CheckCollisionPointRec(GetMousePosition(), startButton))
                 {
                     numStartOptions = GetSceneOptions("assets/scenes", startOptionTexts, startOptionFiles, MAX_START_OPTIONS);
                     showStartDialog = true;
                 }
-            
                 if (showStartDialog)
                 {
                     Rectangle dialog = { GetScreenWidth()/2 - 200, GetScreenHeight()/2 - 150, 400, 300 };
                     DrawRectangleRec(dialog, Fade(DARKGRAY, 0.8f));
                     DrawRectangleLinesEx(dialog, 2, WHITE);
-                    int padding = 10;
-                    int fontSize = 20;
-                    Vector2 mousePoint = GetMousePosition();
-                    for (int i = 0; i < numStartOptions; i++)
-                    {
-                        int textWidth = MeasureText(startOptionTexts[i], fontSize);
-                        int textHeight = fontSize;
-                        float optX = dialog.x + (dialog.width - (textWidth + 2 * padding)) / 2.0f;
-                        float optY = dialog.y + 50 + i * (textHeight + 2 * padding + 10);
-                        Rectangle optRect = { optX, optY, textWidth + 2 * padding, textHeight + 2 * padding };
-                        DrawRectangleRec(optRect, Fade(LIGHTGRAY, 0.8f));
-                        DrawRectangleLinesEx(optRect, 2, WHITE);
-                        DrawText(startOptionTexts[i], optRect.x + padding, optRect.y + padding, fontSize, BLACK);
-                        if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) && CheckCollisionPointRec(mousePoint, optRect))
-                        {
-                            LoadSceneFromFile(&scene, startOptionFiles[i]);
-                            currentScreen = GAMEPLAY;
-                            showStartDialog = false;
-                        }
+                    int clicked = DrawVerticalOptions(dialog, numStartOptions, startOptionTexts, 20, 10);
+                    if (clicked != -1) {
+                        LoadSceneFromFile(&scene, startOptionFiles[clicked]);
+                        scene.screen = GAMEPLAY;
+                        showStartDialog = false;
                     }
                 }
             }
             break;
             case GAMEPLAY:
-            ClearBackground(RAYWHITE);
-            if (scene.hasBackground) {
-                Texture2D bgTex = scene.background;
-                int windowWidth = GetScreenWidth();
-                int windowHeight = GetScreenHeight();
-                float scale_bg = (float)windowHeight / (float)bgTex.height;
-                float desired_tex_width = (float)windowWidth / scale_bg;
-                float crop_x = (bgTex.width - desired_tex_width) / 2.0f;
+            {
+                DrawBackgroundAndSprites(&scene);
+                if (scene.currentCommand < scene.commandCount) {
+                    SceneCommand *cmd = &scene.commands[scene.currentCommand];
+                    if (cmd->type == CMD_TEXT) {
+                        DrawTextDialog(cmd, baseWidth, baseHeight);
+                    } else if (cmd->type == CMD_SCENE) {
+                        Rectangle dialog = { GetScreenWidth()/2 - 200, GetScreenHeight()/2 - 100, 400, 200 };
+                        DrawRectangleRec(dialog, Fade(DARKGRAY, 0.8f));
+                        DrawRectangleLinesEx(dialog, 2, WHITE);
 
-                Rectangle srcRect = { crop_x, 0, desired_tex_width, (float)bgTex.height };
-                Rectangle dstRect = { 0, 0, (float)windowWidth, (float)windowHeight };
-                DrawTexturePro(bgTex, srcRect, dstRect, (Vector2){0, 0}, 0.0f, WHITE);
-
-                for (int i = 0; i < scene.spriteCount; i++) {
-                    Texture2D sprTex = scene.sprites[i].texture;
-                    // Transform sprite position from background texture coordinates to window coordinates.
-                    float drawn_x = (scene.sprites[i].pos.x - crop_x) * scale_bg;
-                    float drawn_y = scene.sprites[i].pos.y * scale_bg;
-                    float sprite_scale = (windowHeight) / (float)sprTex.height;
-                    Rectangle srcRect = { 0, 0, (float)sprTex.width, (float)sprTex.height };
-                    Rectangle dstRect = { drawn_x, drawn_y, sprTex.width * sprite_scale, sprTex.height * sprite_scale };
-                    DrawTexturePro(sprTex, srcRect, dstRect, (Vector2){0, 0}, 0.0f, WHITE);
-                }
-            }
-
-            if (scene.currentCommand < scene.commandCount) {
-                SceneCommand *cmd = &scene.commands[scene.currentCommand];
-                if (cmd->type == CMD_TEXT) {
-                    const float defaultXRel = 20.0f / (float)baseWidth;
-                    const float defaultYRel = 330.0f / (float)baseHeight;
-                    const float defaultWidthRel = 760.0f / (float)baseWidth;
-                    const float defaultHeightRel = 100.0f / (float)baseHeight;
-                    Rectangle textBox;
-                    if (cmd->hasPos) {
-                        float xRel = cmd->pos.x / (float)baseWidth;
-                        float yRel = cmd->pos.y / (float)baseHeight;
-                        textBox.x = xRel * GetScreenWidth();
-                        textBox.y = yRel * GetScreenHeight();
-                    } else {
-                        textBox.x = defaultXRel * GetScreenWidth();
-                        textBox.y = defaultYRel * GetScreenHeight();
-                    }
-                    textBox.width = defaultWidthRel * GetScreenWidth();
-                    textBox.height = defaultHeightRel * GetScreenHeight();
-                    
-                    int textPadding = 10;
-                    Rectangle innerBox = { 
-                        textBox.x + textPadding, 
-                        textBox.y + textPadding, 
-                        textBox.width - 2 * textPadding, 
-                        textBox.height - 2 * textPadding 
-                    };
-                    
-                    DrawRectangleRec(textBox, Fade(BLACK, 0.5f));
-                    if (cmd->hasName)
-                        DrawText(cmd->name, textBox.x + 5, textBox.y - 25, 20, WHITE);
-                    DrawTextBoxed(GetFontDefault(), cmd->arg1, innerBox, 20, 2, true, WHITE);
-                } else if (cmd->type == CMD_SCENE) {
-                    Rectangle dialog = { GetScreenWidth()/2 - 200, GetScreenHeight()/2 - 100, 400, 200 };
-                    DrawRectangleRec(dialog, Fade(DARKGRAY, 0.8f));
-                    DrawRectangleLinesEx(dialog, 2, WHITE);
-                    int padding = 10;
-                    int fontSize = 20;
-                    Vector2 mousePoint = GetMousePosition();
-                    for (int i = 0; i < cmd->optionCount; i++) {
-                        int textWidth = MeasureText(cmd->options[i].optionText, fontSize);
-                        int textHeight = fontSize;
-                        float optX = dialog.x + (dialog.width - (textWidth + 2 * padding)) / 2.0f;
-                        float optY = dialog.y + 50 + i * (textHeight + 2 * padding + 10);
-                        Rectangle optRect = { optX, optY, textWidth + 2 * padding, textHeight + 2 * padding };
-                        DrawRectangleRec(optRect, Fade(LIGHTGRAY, 0.8f));
-                        DrawRectangleLinesEx(optRect, 2, WHITE);
-                        DrawText(cmd->options[i].optionText, optRect.x + padding, optRect.y + padding, fontSize, BLACK);
-
-                        if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) && CheckCollisionPointRec(mousePoint, optRect)) {
-                            LoadSceneFromFile(&scene, cmd->options[i].nextScene);
-                            break;
+                        char sceneOptions[MAX_OPTIONS][BUFFER_SIZE];
+                        for (int i = 0; i < MAX_OPTIONS; i++) {
+                            strncpy(sceneOptions[i], cmd->options[i].optionText, BUFFER_SIZE - 1);
+                            sceneOptions[i][BUFFER_SIZE - 1] = '\0';
+                        }
+                        int clicked = DrawVerticalOptions(dialog, cmd->optionCount, sceneOptions, 20, 10);
+                        if (clicked != -1) {
+                            LoadSceneFromFile(&scene, cmd->options[clicked].nextScene);
                         }
                     }
-                } break;
-            } default: break;
+                }
+            }
+            break;
+            default: break;
         }
         EndDrawing();
     }
-    UnloadSceneAssets(&scene);
     CloseAudioDevice();
     CloseWindow();
     return 0;
