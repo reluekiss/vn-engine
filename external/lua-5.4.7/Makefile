@@ -1,6 +1,6 @@
 PLAT= guess
 
-INSTALL_TOP= ../../../build/lua/
+INSTALL_TOP= ../../../build/lua
 INSTALL_INC= $(INSTALL_TOP)/include
 INSTALL_LIB= $(INSTALL_TOP)/lib
 

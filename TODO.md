@@ -1,2 +1,0 @@
-- create lua integration for scripting rather than legacy commands
-- and translate existing codebase into this paradigm

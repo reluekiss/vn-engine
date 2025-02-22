@@ -20,16 +20,15 @@ OBJ = build/boundedtext.o
 
 all: build/main
 
-build/main: build src/main.c $(OBJ)
-	mkdir -p build
-	$(CC) src/main.c $(CFLAGS) -o build/main $(LIBS) $(OBJ)
+build/main: build $(OBJ)
+	$(MAKE) -C external/lua-5.4.7
+	$(CC) $(CFLAGS) src/main.c build/lua/lib/liblua.a $(OBJ) -o build/main -Ibuild/lua/include $(LIBS)
 
 build/boundedtext.o: build src/boundedtext.c src/boundedtext.h
 	$(CC) -c $(CFLAGS) -o build/boundedtext.o src/boundedtext.c 
 
-lua: build $(OBJ)
-	$(MAKE) -C external/lua-5.4.7
-	$(CC) $(CFLAGS) src/luamain.c build/lua/lib/liblua.a $(OBJ) -o build/luamain -Ibuild/lua/include $(LIBS)
+run:
+	./build/main
 
 build:
 	mkdir -p build

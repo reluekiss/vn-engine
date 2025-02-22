@@ -1,140 +1,12 @@
-#include "raylib.h"
-#include "boundedtext.h"  
 #include <stdio.h>
-#include <string.h>
+#include <stdlib.h>
 #include <stdbool.h>
-
-#ifndef WINDOWS
-#include <dirent.h>
-#else
-#include <windows.h>
-#endif
-
-#define BUFFER_SIZE 256
-#define PATH_BUFFER_SIZE 512
-#define MAX_COMMANDS 256
-#define MAX_OPTIONS 2
-#define MAX_SPRITES 10
-#define MAX_START_OPTIONS 10
-
-typedef enum { 
-    TITLE,
-    GAMEPLAY,
-} currentScreen;
-
-typedef enum { 
-    CMD_BG, 
-    CMD_SPRITE, 
-    CMD_MUSIC, 
-    CMD_SOUND, 
-    CMD_TEXT, 
-    CMD_SCENE, 
-    CMD_USPRITE,
-    CMD_END
-} CommandType;
-
-typedef struct {
-    char optionText[BUFFER_SIZE];
-    char nextScene[BUFFER_SIZE];
-} SceneOption;
-
-typedef struct {
-    CommandType type;
-    char arg1[BUFFER_SIZE];   
-    char arg2[BUFFER_SIZE];   
-
-    char name[BUFFER_SIZE];
-    bool hasName;
-    Vector2 pos;
-    bool hasPos;
-
-    char spriteID[BUFFER_SIZE];
-    bool hasSpriteID;
-
-    float musicStart;
-    bool hasMusicStart;
-
-    int optionCount;
-    SceneOption options[MAX_OPTIONS];
-} SceneCommand;
-
-typedef struct {
-    SceneCommand commands[MAX_COMMANDS];
-    int commandCount;
-    int currentCommand;
-
-    Texture2D background;
-    bool hasBackground;
-
-    struct {
-        Texture2D texture;
-        Vector2 pos;
-        char id[BUFFER_SIZE];
-        bool hasID;
-    } sprites[MAX_SPRITES];
-    int spriteCount;
-    Shader spriteOutline;
-
-    Music music;
-    bool hasMusic;
-    
-    currentScreen screen;
-} Scene;
-
-#ifndef WINDOWS
-int GetSceneOptions(const char *directory, char optionTexts[][BUFFER_SIZE], char optionFiles[][BUFFER_SIZE], int maxOptions) {
-    DIR *d;
-    struct dirent *dir;
-    int count = 0;
-    d = opendir(directory);
-    if (!d) return 0;
-    while ((dir = readdir(d)) != NULL && count < maxOptions) {
-        if (dir->d_type == DT_DIR)
-            continue;
-        char *dot = strrchr(dir->d_name, '.');
-        if (dot && strcmp(dot, ".txt") == 0) {
-            strncpy(optionFiles[count], dir->d_name, BUFFER_SIZE);
-            optionFiles[count][BUFFER_SIZE-1] = '\0';
-            char name[BUFFER_SIZE];
-            strncpy(name, dir->d_name, BUFFER_SIZE);
-            name[BUFFER_SIZE-1] = '\0';
-            dot = strrchr(name, '.');
-            if (dot) *dot = '\0';
-            strncpy(optionTexts[count], name, BUFFER_SIZE);
-            optionTexts[count][BUFFER_SIZE-1] = '\0';
-            count++;
-        }
-    }
-    closedir(d);
-    return count;
-}
-#else
-#include <windows.h>
-int GetSceneOptions(const char *directory, char optionTexts[][BUFFER_SIZE], char optionFiles[][BUFFER_SIZE], int maxOptions) {
-    WIN32_FIND_DATA findFileData;
-    char searchPath[PATH_BUFFER_SIZE];
-    snprintf(searchPath, PATH_BUFFER_SIZE, "%s\\*.txt", directory);
-    HANDLE hFind = FindFirstFile(searchPath, &findFileData);
-    int count = 0;
-    if (hFind == INVALID_HANDLE_VALUE) return 0;
-    do {
-        if (!(findFileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-            strncpy(optionFiles[count], findFileData.cFileName, BUFFER_SIZE);
-            optionFiles[count][BUFFER_SIZE-1] = '\0';
-            char name[BUFFER_SIZE];
-            strncpy(name, findFileData.cFileName, BUFFER_SIZE);
-            name[BUFFER_SIZE-1] = '\0';
-            char *dot = strrchr(name, '.');
-            if (dot) *dot = '\0';
-            strncpy(optionTexts[count], name, BUFFER_SIZE);
-            optionTexts[count][BUFFER_SIZE-1] = '\0';
-            count++;
-        }
-    } while (FindNextFile(hFind, &findFileData) && count < maxOptions);
-    FindClose(hFind);
-    return count;
-}
-#endif
+#include <string.h>
+#include "raylib.h"
+#include "boundedtext.h"
+#include "../build/lua/include/lua.h"
+#include "../build/lua/include/lualib.h"
+#include "../build/lua/include/lauxlib.h"
 
 #if defined(PLATFORM_DESKTOP)
     #define GLSL_VERSION            330
@@ -142,426 +14,343 @@ int GetSceneOptions(const char *directory, char optionTexts[][BUFFER_SIZE], char
     #define GLSL_VERSION            100
 #endif
 
-static void DrawBackgroundAndSprites(Scene *scene) {
-    if (scene->hasBackground) {
-        Texture2D bgTex = scene->background;
-        int windowWidth = GetScreenWidth();
-        int windowHeight = GetScreenHeight();
-        float scale_bg = (float)windowHeight / (float)bgTex.height;
-        float desired_tex_width = (float)windowWidth / scale_bg;
-        float crop_x = (bgTex.width - desired_tex_width) / 2.0f;
-        Rectangle srcRect = { crop_x, 0, desired_tex_width, (float)bgTex.height };
-        Rectangle dstRect = { 0, 0, (float)windowWidth, (float)windowHeight };
-        DrawTexturePro(bgTex, srcRect, dstRect, (Vector2){0, 0}, 0.0f, WHITE);
+#define PATH_BUFFER_SIZE 512
+#define BUFFER_SIZE 256
+#define MAX_SPRITES 32
+#define MAX_CHOICES 10
 
-        float outlineSize = 8.0f;
-        float outlineColor[4] = { 0.2f, 0.2f, 0.2f, 0.2f };
+typedef struct {
+    Texture2D texture;
+    Vector2 pos;
+    char id[BUFFER_SIZE];
+    bool hasID;
+} Sprite;
 
-        for (int i = 0; i < scene->spriteCount; i++) {
-            Texture2D sprTex = scene->sprites[i].texture;
-            float drawn_x = (scene->sprites[i].pos.x - crop_x) * scale_bg;
-            float drawn_y = scene->sprites[i].pos.y * scale_bg;
-            float sprite_scale = (4.0/3.0 * windowHeight) / (float)sprTex.height;
-            Rectangle sprSrc = { 0, 0, (float)sprTex.width, (float)sprTex.height };
-            Rectangle sprDst = { drawn_x, drawn_y, sprTex.width * sprite_scale, sprTex.height * sprite_scale };
+typedef struct {
+    char text[BUFFER_SIZE];
+    char scene[BUFFER_SIZE];
+} Choice;
 
-            float textureSize[2] = { (float)sprTex.width, (float)sprTex.height };
-            int outlineSizeLoc = GetShaderLocation(scene->spriteOutline, "outlineSize");
-            int outlineColorLoc = GetShaderLocation(scene->spriteOutline, "outlineColor");
-            int textureSizeLoc = GetShaderLocation(scene->spriteOutline, "textureSize");
-            SetShaderValue(scene->spriteOutline, outlineSizeLoc, &outlineSize, SHADER_UNIFORM_FLOAT);
-            SetShaderValue(scene->spriteOutline, outlineColorLoc, outlineColor, SHADER_UNIFORM_VEC4);
-            SetShaderValue(scene->spriteOutline, textureSizeLoc, textureSize, SHADER_UNIFORM_VEC2);
+/* Global state */
+static Texture2D gBackground;
+static bool gHasBackground = false;
 
-            BeginShaderMode(scene->spriteOutline);
-            DrawTexturePro(sprTex, sprSrc, sprDst, (Vector2){0, 0}, 0.0f, WHITE);
-            EndShaderMode();
-        }
-    }
-}
+static Sprite gSprites[MAX_SPRITES];
+static int gSpriteCount = 0;
 
-static int DrawVerticalOptions(Rectangle dialog, int numOptions, char optionTexts[][BUFFER_SIZE], int fontSize, int padding) {
-    Vector2 mousePoint = GetMousePosition();
-    int clickedOption = -1;
-    for (int i = 0; i < numOptions; i++) {
-        int textWidth = MeasureText(optionTexts[i], fontSize);
-        int textHeight = fontSize;
-        float optX = dialog.x + (dialog.width - (textWidth + 2 * padding)) / 2.0f;
-        float optY = dialog.y + 50 + i * (textHeight + 2 * padding + 10);
-        Rectangle optRect = { optX, optY, textWidth + 2 * padding, textHeight + 2 * padding };
-        DrawRectangleRec(optRect, Fade(LIGHTGRAY, 0.8f));
-        DrawRectangleLinesEx(optRect, 2, WHITE);
-        DrawText(optionTexts[i], optRect.x + padding, optRect.y + padding, fontSize, BLACK);
-        if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) && CheckCollisionPointRec(mousePoint, optRect)) {
-            clickedOption = i;
-        }
-    }
-    return clickedOption;
-}
+static Music gMusic;
+static bool gHasMusic = false;
 
-static void DrawTextDialog(SceneCommand *cmd, int baseWidth, int baseHeight) {
-    const float defaultXRel = 60.0f / (float)baseWidth;
-    const float defaultYRel = 330.0f / (float)baseHeight;
-    const float defaultWidthRel = 685.0f / (float)baseWidth;
-    const float defaultHeightRel = 100.0f / (float)baseHeight;
-    Rectangle textBox;
-    if (cmd->hasPos) {
-        float xRel = cmd->pos.x / (float)baseWidth;
-        float yRel = cmd->pos.y / (float)baseHeight;
-        textBox.x = xRel * GetScreenWidth();
-        textBox.y = yRel * GetScreenHeight();
-    } else {
-        textBox.x = defaultXRel * GetScreenWidth();
-        textBox.y = defaultYRel * GetScreenHeight();
-    }
-    textBox.width = defaultWidthRel * GetScreenWidth();
-    textBox.height = defaultHeightRel * GetScreenHeight();
-    
-    int textPadding = 10;
-    Rectangle innerBox = { 
-        textBox.x + textPadding, 
-        textBox.y + textPadding, 
-        textBox.width - 2 * textPadding, 
-        textBox.height - 2 * textPadding 
-    };
-    
-    DrawRectangleRec(textBox, Fade(BLACK, 0.5f));
-    if (cmd->hasName)
-        DrawText(cmd->name, textBox.x + 5, textBox.y - 25, 20, WHITE);
-    DrawTextBoxed(GetFontDefault(), cmd->arg1, innerBox, 20, 2, true, WHITE);
-}
+static char gDialogText[BUFFER_SIZE] = "";
+static char gDialogName[BUFFER_SIZE] = "";
+static bool gHasDialog = false;
+static Vector2 gDialogPos;
+static bool gDialogHasPos = false;
 
-static void ProcessCommand(Scene *scene, SceneCommand *cmd) {
-    char path[PATH_BUFFER_SIZE];
-    switch(cmd->type) {
-        case CMD_BG:
-            if (scene->hasBackground) UnloadTexture(scene->background);
-            snprintf(path, PATH_BUFFER_SIZE, "assets/images/%s", cmd->arg1);
-            {
-                scene->background = LoadTexture(path);
-                scene->hasBackground = true;
-            }
-            break;
-        case CMD_SPRITE:
-            if (scene->spriteCount < MAX_SPRITES) {
-                snprintf(path, PATH_BUFFER_SIZE, "assets/images/%s", cmd->arg2);
-                int x = cmd->hasPos ? (int)cmd->pos.x : 0;
-                int y = cmd->hasPos ? (int)cmd->pos.y : 0;
-                scene->sprites[scene->spriteCount].texture = LoadTexture(path);
-                scene->sprites[scene->spriteCount].pos = (Vector2){ x, y };
-                if (cmd->hasSpriteID) {
-                    strcpy(scene->sprites[scene->spriteCount].id, cmd->spriteID);
-                    scene->sprites[scene->spriteCount].hasID = true;
-                } else {
-                    scene->sprites[scene->spriteCount].hasID = false;
-                }
-                scene->spriteCount++;
-            }
-            break;
-        case CMD_MUSIC:
-            if (scene->hasMusic) { 
-                StopMusicStream(scene->music); 
-                UnloadMusicStream(scene->music); 
-            }
-            snprintf(path, PATH_BUFFER_SIZE, "assets/music/%s", cmd->arg1);
-            scene->music = LoadMusicStream(path);
-            PlayMusicStream(scene->music);
-            if (cmd->hasMusicStart) {
-                SeekMusicStream(scene->music, cmd->musicStart);
-            }
-            scene->hasMusic = true;
-            break;
-        case CMD_SOUND:
-            snprintf(path, PATH_BUFFER_SIZE, "assets/music/%s", cmd->arg1);
-            {
-                Sound s = LoadSound(path);
-                PlaySound(s);
-            }
-            break;
-        case CMD_USPRITE:
-            for (int i = 0; i < scene->spriteCount; i++) {
-                if (scene->sprites[i].hasID && strcmp(scene->sprites[i].id, cmd->spriteID) == 0) {
-                    UnloadTexture(scene->sprites[i].texture);
-                    for (int j = i; j < scene->spriteCount - 1; j++) {
-                        scene->sprites[j] = scene->sprites[j+1];
-                    }
-                    scene->spriteCount--;
-                    break;
-                }
-            }
-            break;
-        case CMD_TEXT:
-            break;
-        case CMD_SCENE:
-            break;
-        case CMD_END:
-            scene->screen = TITLE;
-            break;
-    }
-}
+static Choice gChoices[MAX_CHOICES];
+static int gChoiceCount = 0;
 
-static void ProcessAutoCommands(Scene *scene) {
-    while (scene->currentCommand < scene->commandCount) {
-        SceneCommand *cmd = &scene->commands[scene->currentCommand];
-        if (cmd->type == CMD_TEXT || cmd->type == CMD_SCENE) break;
-        ProcessCommand(scene, cmd);
-        scene->currentCommand++;
-    }
-}
+static lua_State *gL = NULL;
+static lua_State *gSceneThread = NULL;
 
-// TODO: there must be a way to refactor this into something more reasonable
-static void LoadSceneFromFile(Scene *scene, const char *sceneFile) {
-    scene->commandCount = 0;
-    scene->currentCommand = 0;
-    FILE *fp;
+/* Exposed Variables */
+static char gCurrentScene[BUFFER_SIZE] = "";
+static char gLastScene[BUFFER_SIZE] = "";
+
+static void LoadScene(const char *sceneFile) {
+    strncpy(gLastScene, gCurrentScene, BUFFER_SIZE - 1);
+    gLastScene[BUFFER_SIZE - 1] = '\0';
+    strncpy(gCurrentScene, sceneFile, BUFFER_SIZE - 1);
+    gCurrentScene[BUFFER_SIZE - 1] = '\0';
+    lua_pushstring(gL, gLastScene);
+    lua_setglobal(gL, "last_scene");
+
     char path[PATH_BUFFER_SIZE];
     snprintf(path, PATH_BUFFER_SIZE, "assets/scenes/%s", sceneFile);
-    fp = fopen(path, "r");
-    if (!fp) return;
-    char line[BUFFER_SIZE];
-    int len;
-    while (fgets(line, BUFFER_SIZE, fp)) {
-        len = (int)strlen(line);
-        if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
-        if (strlen(line)==0) continue;
-        if (strncmp(line, "::bg", 4)==0) {
-            SceneCommand *cmd = &scene->commands[scene->commandCount++];
-            cmd->type = CMD_BG;
-            if (fgets(line, BUFFER_SIZE, fp)) {
-                len = (int)strlen(line);
-                if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
-                strcpy(cmd->arg1, line);
-            }
-        } else if (strncmp(line, "::sprite", 8)==0) {
-            SceneCommand *cmd = &scene->commands[scene->commandCount++];
-            cmd->type = CMD_SPRITE;
-            cmd->hasSpriteID = false;
-            cmd->hasPos = false;
-            if (fgets(line, BUFFER_SIZE, fp)) {
-                len = (int)strlen(line);
-                if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
-                while(line[0] == ':') {
-                    if (strncmp(line, ":id", 3)==0) {
-                        char *p = line + 3;
-                        while(*p ==' ') p++;
-                        strcpy(cmd->spriteID, p);
-                        cmd->hasSpriteID = true;
-                    } else if (strncmp(line, ":pos", 4)==0) {
-                        char *p = line + 4;
-                        while(*p ==' ') p++;
-                        int posX = 0, posY = 0;
-                        if (sscanf(p, "%dx%d", &posX, &posY)==2) {
-                            cmd->pos = (Vector2){ posX, posY };
-                            cmd->hasPos = true;
-                        }
-                    }
-                    if (!fgets(line, BUFFER_SIZE, fp)) break;
-                    len = (int)strlen(line);
-                    if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
-                    if(line[0] != ':') break;
-                }
-                strcpy(cmd->arg2, line);
-            }
-        } else if (strncmp(line, "::Usprite", 9)==0) {
-            SceneCommand *cmd = &scene->commands[scene->commandCount++];
-            cmd->type = CMD_USPRITE;
-            cmd->hasSpriteID = false;
-            if (fgets(line, BUFFER_SIZE, fp)) {
-                len = (int)strlen(line);
-                if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
-                while(line[0] == ':') {
-                    if (strncmp(line, ":id", 3)==0) {
-                        char *p = line + 3;
-                        while(*p ==' ') p++;
-                        strcpy(cmd->spriteID, p);
-                        cmd->hasSpriteID = true;
-                    }
-                    if (!fgets(line, BUFFER_SIZE, fp)) break;
-                    len = (int)strlen(line);
-                    if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
-                    if(line[0] != ':') break;
-                }
-            }
-        } else if (strncmp(line, "::music", 7)==0) {
-            SceneCommand *cmd = &scene->commands[scene->commandCount++];
-            cmd->type = CMD_MUSIC;
-            cmd->hasMusicStart = false;
-            if (fgets(line, BUFFER_SIZE, fp)) {
-                len = (int)strlen(line);
-                if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
-                while(line[0] == ':') {
-                    if (strncmp(line, ":start", 6)==0) {
-                        char *p = line + 6;
-                        while(*p == ' ') p++;
-                        int minutes = 0, seconds = 0;
-                        if (sscanf(p, "%d:%d", &minutes, &seconds) == 2) {
-                            cmd->musicStart = minutes * 60 + seconds;
-                            cmd->hasMusicStart = true;
-                        }
-                    }
-                    if (!fgets(line, BUFFER_SIZE, fp)) break;
-                    len = (int)strlen(line);
-                    if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
-                }
-                strcpy(cmd->arg1, line);
-            }
-        } else if (strncmp(line, "::sound", 7)==0) {
-            SceneCommand *cmd = &scene->commands[scene->commandCount++];
-            cmd->type = CMD_SOUND;
-            if (fgets(line, BUFFER_SIZE, fp)) {
-                len = (int)strlen(line);
-                if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
-                strcpy(cmd->arg1, line);
-            }
-        } else if (strncmp(line, "::text", 6)==0) {
-            SceneCommand *cmd = &scene->commands[scene->commandCount++];
-            cmd->type = CMD_TEXT;
-            cmd->hasName = false;
-            cmd->hasPos = false;
-            if (fgets(line, BUFFER_SIZE, fp)) {
-                len = (int)strlen(line);
-                if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
-                while(line[0] == ':') {
-                    if (strncmp(line, ":name", 5)==0) {
-                        char *p = line + 5;
-                        while(*p == ' ') p++;
-                        strcpy(cmd->name, p);
-                        cmd->hasName = true;
-                    } else if (strncmp(line, ":pos", 4)==0) {
-                        char *p = line + 4;
-                        while(*p == ' ') p++;
-                        int posX = 0, posY = 0;
-                        if (sscanf(p, "%dx%d", &posX, &posY)==2) {
-                            cmd->pos = (Vector2){ posX, posY };
-                            cmd->hasPos = true;
-                        }
-                    }
-                    if (!fgets(line, BUFFER_SIZE, fp)) break;
-                    len = (int)strlen(line);
-                    if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
-                    if(line[0] != ':') break;
-                }
-                strcpy(cmd->arg1, line);
-            }
-        } else if (strncmp(line, "::scene", 7)==0) {
-            SceneCommand *cmd = &scene->commands[scene->commandCount++];
-            cmd->type = CMD_SCENE;
-            cmd->optionCount = 0;
-            while (cmd->optionCount < MAX_OPTIONS) {
-                if (!fgets(line, BUFFER_SIZE, fp)) break;
-                len = (int)strlen(line);
-                if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
-                if (strlen(line)==0) break;
-                strcpy(cmd->options[cmd->optionCount].optionText, line);
-                if (!fgets(line, BUFFER_SIZE, fp)) break;
-                len = (int)strlen(line);
-                if(len && (line[len-1]=='\n' || line[len-1]=='\r')) line[len-1] = '\0';
-                strcpy(cmd->options[cmd->optionCount].nextScene, line);
-                cmd->optionCount++;
-            }
-        } else if (strncmp(line, "::end", 5)==0) {
-            SceneCommand *cmd = &scene->commands[scene->commandCount++];
-            cmd->type = CMD_END;
-        }
+    gSceneThread = lua_newthread(gL);
+    if (luaL_loadfile(gSceneThread, path) != LUA_OK) {
+        const char *error = lua_tostring(gSceneThread, -1);
+        fprintf(stderr, "Error loading scene: %s\n", error);
+        return;
     }
-    fclose(fp);
-    while (scene->currentCommand < scene->commandCount) {
-        SceneCommand *cmd = &scene->commands[scene->currentCommand];
-        if (cmd->type == CMD_TEXT || cmd->type == CMD_SCENE)
-            break;
-        ProcessCommand(scene, cmd);
-        scene->currentCommand++;
+    int nres = 0;
+    int status = lua_resume(gSceneThread, gL, 0, &nres);
+    if (status != LUA_YIELD && status != LUA_OK) {
+        const char *error = lua_tostring(gSceneThread, -1);
+        fprintf(stderr, "Error starting scene: %s\n", error);
     }
 }
 
-int main(void)
-{
-    const int baseWidth = 800, baseHeight = 450;
-    InitWindow(baseWidth, baseHeight, "vn-engine");
+/* Lua API */
+static int l_load_background(lua_State *L) {
+    const char *file = luaL_checkstring(L, 1);
+    char path[PATH_BUFFER_SIZE];
+    snprintf(path, PATH_BUFFER_SIZE, "assets/images/%s", file);
+    if (gHasBackground) UnloadTexture(gBackground);
+    gBackground = LoadTexture(path);
+    gHasBackground = true;
+    TraceLog(LOG_INFO, "Loaded background: %s", file);
+    return 0;
+}
+
+static int l_load_sprite(lua_State *L) {
+    const char *file = luaL_checkstring(L, 1);
+    int x = luaL_checkinteger(L, 2);
+    int y = luaL_checkinteger(L, 3);
+    const char *id = NULL;
+    if (lua_gettop(L) >= 4 && lua_isstring(L, 4))
+        id = lua_tostring(L, 4);
+    Vector2 pos = { (float)x, (float)y };
+
+    if (gSpriteCount >= MAX_SPRITES) return -1;
+    char path[PATH_BUFFER_SIZE];
+    snprintf(path, PATH_BUFFER_SIZE, "assets/images/%s", file);
+    Texture2D tex = LoadTexture(path);
+    gSprites[gSpriteCount].texture = tex;
+    gSprites[gSpriteCount].pos = pos;
+    if (id) {
+        strncpy(gSprites[gSpriteCount].id, id, BUFFER_SIZE - 1);
+        gSprites[gSpriteCount].id[BUFFER_SIZE - 1] = '\0';
+        gSprites[gSpriteCount].hasID = true;
+    } else {
+        gSprites[gSpriteCount].hasID = false;
+    }
+    gSpriteCount++;
+    TraceLog(LOG_INFO, "Loaded sprite: %s at (%d, %d) id: %s", file, x, y, id ? id : "none");
+    return 0;
+}
+
+static int l_unload_sprite(lua_State *L) {
+    const char *id = luaL_checkstring(L, 1);
+    for (int i = 0; i < gSpriteCount; i++) {
+        if (gSprites[i].hasID && strcmp(gSprites[i].id, id) == 0) {
+            UnloadTexture(gSprites[i].texture);
+            for (int j = i; j < gSpriteCount - 1; j++)
+                gSprites[j] = gSprites[j + 1];
+            gSpriteCount--;
+            TraceLog(LOG_INFO, "Unloaded sprite with id: %s", id);
+            break;
+        }
+    }
+    return 0;
+}
+
+static int l_play_music(lua_State *L) {
+    const char *file = luaL_checkstring(L, 1);
+    float start = 0.0f;
+    if (lua_gettop(L) >= 2 && lua_isnumber(L, 2))
+        start = lua_tonumber(L, 2);
+    char path[PATH_BUFFER_SIZE];
+    snprintf(path, PATH_BUFFER_SIZE, "assets/music/%s", file);
+    if (gHasMusic) {
+        StopMusicStream(gMusic);
+        UnloadMusicStream(gMusic);
+    }
+    gMusic = LoadMusicStream(path);
+    PlayMusicStream(gMusic);
+    if (start > 0.0f)
+        SeekMusicStream(gMusic, start);
+    gHasMusic = true;
+    TraceLog(LOG_INFO, "Playing music: %s from %.2f sec", file, start);
+    return 0;
+}
+
+static int l_play_sound(lua_State *L) {
+    const char *file = luaL_checkstring(L, 1);
+    char path[PATH_BUFFER_SIZE];
+    snprintf(path, PATH_BUFFER_SIZE, "assets/sounds/%s", file);
+    Sound s = LoadSound(path);
+    PlaySound(s);
+    TraceLog(LOG_INFO, "Played sound: %s", file);
+    return 0;
+}
+
+static int l_show_text(lua_State *L) {
+    const char *text = luaL_checkstring(L, 1);
+    strncpy(gDialogText, text, BUFFER_SIZE - 1);
+    gDialogText[BUFFER_SIZE - 1] = '\0';
+    gHasDialog = true;
+    if (lua_gettop(L) >= 2 && lua_isstring(L, 2)) {
+        const char *name = lua_tostring(L, 2);
+        strncpy(gDialogName, name, BUFFER_SIZE - 1);
+        gDialogName[BUFFER_SIZE - 1] = '\0';
+    } else {
+        gDialogName[0] = '\0';
+    }
+    if (lua_gettop(L) >= 4 && lua_isnumber(L, 3) && lua_isnumber(L, 4)) {
+        gDialogPos.x = (float)lua_tointeger(L, 3);
+        gDialogPos.y = (float)lua_tointeger(L, 4);
+        gDialogHasPos = true;
+    } else {
+        gDialogHasPos = false;
+    }
+    TraceLog(LOG_INFO, "Show text: %s", gDialogText);
+    return lua_yield(L, 0);
+}
+
+static int l_clear_text(lua_State *L) {
+    (void)L;
+    gDialogText[0] = '\0';
+    gDialogName[0] = '\0';
+    gHasDialog = false;
+    gDialogHasPos = false;
+    return 0;
+}
+
+static int l_set_choices(lua_State *L) {
+    if (!lua_istable(L, 1)) return 0;
+    gChoiceCount = 0;
+    lua_pushnil(L);
+    while (lua_next(L, 1) && gChoiceCount < MAX_CHOICES) {
+        if (lua_istable(L, -1)) {
+            lua_getfield(L, -1, "text");
+            lua_getfield(L, -2, "scene");
+            const char *text = luaL_checkstring(L, -2);
+            const char *scene = luaL_checkstring(L, -1);
+            strncpy(gChoices[gChoiceCount].text, text, BUFFER_SIZE - 1);
+            gChoices[gChoiceCount].text[BUFFER_SIZE - 1] = '\0';
+            strncpy(gChoices[gChoiceCount].scene, scene, BUFFER_SIZE - 1);
+            gChoices[gChoiceCount].scene[BUFFER_SIZE - 1] = '\0';
+            gChoiceCount++;
+            lua_pop(L, 2);
+        }
+        lua_pop(L, 1);
+    }
+    return lua_yield(L, 0);
+}
+
+int main(void) {
+    const int screenWidth = 800, screenHeight = 450;
+    // Proportions for text box
+    const float defaultXRel = 60.0f / (float)screenWidth;
+    const float defaultYRel = 330.0f / (float)screenHeight;
+    const float defaultWidthRel = 685.0f / (float)screenWidth;
+    const float defaultHeightRel = 100.0f / (float)screenHeight;
+
+    InitWindow(screenWidth, screenHeight, "LuaJIT Engine");
     InitAudioDevice();
+    Shader spriteOutline = LoadShader(0, TextFormat("assets/shaders/outline-%i.fs", GLSL_VERSION));
 
-    Scene scene = {0};
-    scene.screen = TITLE;
-    scene.spriteOutline = LoadShader(0, TextFormat("assets/shaders/outline-%i.fs", GLSL_VERSION));
+    gL = luaL_newstate();
+    luaL_openlibs(gL);
 
-    static bool showStartDialog = false;
-    static char startOptionTexts[MAX_START_OPTIONS][BUFFER_SIZE];
-    static char startOptionFiles[MAX_START_OPTIONS][BUFFER_SIZE];
-    static int numStartOptions = 0;
+    lua_register(gL, "load_background", l_load_background);
+    lua_register(gL, "load_sprite", l_load_sprite);
+    lua_register(gL, "unload_sprite", l_unload_sprite);
+    lua_register(gL, "play_music", l_play_music);
+    lua_register(gL, "play_sound", l_play_sound);
+    lua_register(gL, "show_text", l_show_text);
+    lua_register(gL, "clear_text", l_clear_text);
+    lua_register(gL, "set_choices", l_set_choices);
+
+    LoadScene("script.lua");
 
     SetTargetFPS(60);
-    while (!WindowShouldClose())
-    {
-        if (scene.hasMusic) UpdateMusicStream(scene.music);
-
-        if (scene.currentCommand < scene.commandCount) {
-            SceneCommand *cmd = &scene.commands[scene.currentCommand];
-            if (cmd->type == CMD_TEXT) {
-                if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) || IsKeyPressed(KEY_SPACE)) {
-                    scene.currentCommand++;
-                    ProcessAutoCommands(&scene);
+    while (!WindowShouldClose()) {
+        if (gHasMusic) UpdateMusicStream(gMusic);
+    
+        if (gHasDialog && gChoiceCount == 0) {
+            if (lua_status(gSceneThread) == LUA_YIELD &&
+                (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) || IsKeyPressed(KEY_SPACE))) {
+                int nres = 0;
+                int status = lua_resume(gSceneThread, gL, 0, &nres);
+                if (status != LUA_YIELD && status != LUA_OK) {
+                    const char *error = lua_tostring(gSceneThread, -1);
+                    fprintf(stderr, "Error resuming scene: %s\n", error);
                 }
             }
         }
-
+    
         BeginDrawing();
-        ClearBackground(RAYWHITE);
+            ClearBackground(RAYWHITE);
+            if (gHasBackground) {
+                Texture2D bgTex = gBackground;
+                int windowWidth = GetScreenWidth(), windowHeight = GetScreenHeight();
+                float scale_bg = (float)windowHeight / bgTex.height;
+                float desired_tex_width = (float)windowWidth / scale_bg;
+                float crop_x = (bgTex.width - desired_tex_width) / 2.0f;
+                Rectangle srcRect = { crop_x, 0, desired_tex_width, (float)bgTex.height };
+                Rectangle dstRect = { 0, 0, (float)windowWidth, (float)windowHeight };
+                DrawTexturePro(bgTex, srcRect, dstRect, (Vector2){0,0}, 0.0f, WHITE);
 
-        switch (scene.screen) {
-            case TITLE:
-            {
-                DrawText("TITLE SCREEN", 20, 20, 40, DARKGREEN);
-                Rectangle startButton = { GetScreenWidth()/2 - 130, GetScreenHeight()/2, 260, 50 };
-                DrawRectangleRec(startButton, BLUE);
-                DrawText("Choose Starting Scene", startButton.x + 10, startButton.y + 15, 20, WHITE);
-                if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) && CheckCollisionPointRec(GetMousePosition(), startButton))
-                {
-                    numStartOptions = GetSceneOptions("assets/scenes", startOptionTexts, startOptionFiles, MAX_START_OPTIONS);
-                    showStartDialog = true;
-                }
-                if (showStartDialog)
-                {
-                    Rectangle dialog = { GetScreenWidth()/2 - 200, GetScreenHeight()/2 - 150, 400, 300 };
-                    DrawRectangleRec(dialog, Fade(DARKGRAY, 0.8f));
-                    DrawRectangleLinesEx(dialog, 2, WHITE);
-                    int clicked = DrawVerticalOptions(dialog, numStartOptions, startOptionTexts, 20, 10);
-                    if (clicked != -1) {
-                        LoadSceneFromFile(&scene, startOptionFiles[clicked]);
-                        scene.screen = GAMEPLAY;
-                        showStartDialog = false;
+                if (gSpriteCount > 0) {
+                    float outlineSize = 8.0f;
+                    float outlineColor[4] = { 0.2f, 0.2f, 0.2f, 0.2f };
+
+                    for (int i = 0; i < gSpriteCount; i++) {
+                        Texture2D sprTex = gSprites[i].texture;
+                        float drawn_x = (gSprites[i].pos.x - crop_x) * scale_bg;
+                        float drawn_y = gSprites[i].pos.y * scale_bg;
+                        float sprite_scale = (4.0/3.0 * windowHeight) / (float)sprTex.height;
+                        Rectangle sprSrc = { 0, 0, (float)sprTex.width, (float)sprTex.height };
+                        Rectangle sprDst = { drawn_x, drawn_y, sprTex.width * sprite_scale, sprTex.height * sprite_scale };
+
+                        float textureSize[2] = { (float)sprTex.width, (float)sprTex.height };
+                        int outlineSizeLoc = GetShaderLocation(spriteOutline, "outlineSize");
+                        int outlineColorLoc = GetShaderLocation(spriteOutline, "outlineColor");
+                        int textureSizeLoc = GetShaderLocation(spriteOutline, "textureSize");
+                        SetShaderValue(spriteOutline, outlineSizeLoc, &outlineSize, SHADER_UNIFORM_FLOAT);
+                        SetShaderValue(spriteOutline, outlineColorLoc, outlineColor, SHADER_UNIFORM_VEC4);
+                        SetShaderValue(spriteOutline, textureSizeLoc, textureSize, SHADER_UNIFORM_VEC2);
+
+                        BeginShaderMode(spriteOutline);
+                        DrawTexturePro(sprTex, sprSrc, sprDst, (Vector2){0, 0}, 0.0f, WHITE);
+                        EndShaderMode();
                     }
                 }
             }
-            break;
-            case GAMEPLAY:
-            {
-                DrawBackgroundAndSprites(&scene);
-                if (scene.currentCommand < scene.commandCount) {
-                    SceneCommand *cmd = &scene.commands[scene.currentCommand];
-                    if (cmd->type == CMD_TEXT) {
-                        DrawTextDialog(cmd, baseWidth, baseHeight);
-                    } else if (cmd->type == CMD_SCENE) {
-                        Rectangle dialog = { GetScreenWidth()/2 - 200, GetScreenHeight()/2 - 100, 400, 200 };
-                        DrawRectangleRec(dialog, Fade(DARKGRAY, 0.8f));
-                        DrawRectangleLinesEx(dialog, 2, WHITE);
-
-                        char sceneOptions[MAX_OPTIONS][BUFFER_SIZE];
-                        for (int i = 0; i < MAX_OPTIONS; i++) {
-                            strncpy(sceneOptions[i], cmd->options[i].optionText, BUFFER_SIZE - 1);
-                            sceneOptions[i][BUFFER_SIZE - 1] = '\0';
-                        }
-                        int clicked = DrawVerticalOptions(dialog, cmd->optionCount, sceneOptions, 20, 10);
-                        if (clicked != -1) {
-                            LoadSceneFromFile(&scene, cmd->options[clicked].nextScene);
-                        }
+            if (gHasDialog) {
+                Rectangle textBox;
+                if (gDialogHasPos) {
+                    float xRel = gDialogPos.x / (float)GetScreenWidth();
+                    float yRel = gDialogPos.y / (float)GetScreenHeight();
+                    textBox.x = xRel * GetScreenWidth();
+                    textBox.y = yRel * GetScreenHeight();
+                } else {
+                    textBox.x = defaultXRel * GetScreenWidth();
+                    textBox.y = defaultYRel * GetScreenHeight();
+                }
+                textBox.width = defaultWidthRel * GetScreenWidth();
+                textBox.height = defaultHeightRel * GetScreenHeight();
+                int textPadding = 10;
+                Rectangle innerBox = { textBox.x + textPadding, textBox.y + textPadding,
+                                       textBox.width - 2 * textPadding, textBox.height - 2 * textPadding };
+                DrawRectangleRec(textBox, Fade(BLACK, 0.5f));
+                if (gDialogName[0])
+                    DrawText(gDialogName, textBox.x + 5, textBox.y - 25, 20, WHITE);
+                DrawTextBoxed(GetFontDefault(), gDialogText, innerBox, 20, 2, true, WHITE);
+            }
+            if (gChoiceCount > 0) {
+                int choiceFont = 20;
+                int spacing = 20, buttonHeight = 40, startY = 150;
+                for (int i = 0; i < gChoiceCount; i++) {
+                    int textWidth = MeasureText(gChoices[i].text, choiceFont);
+                    int buttonWidth = textWidth + 20;
+                    int buttonX = (GetScreenWidth() - buttonWidth) / 2;
+                    int buttonY = startY + i * (buttonHeight + spacing);
+                    Rectangle buttonRect = { buttonX, buttonY, buttonWidth, buttonHeight };
+                    DrawRectangleRec(buttonRect, LIGHTGRAY);
+                    DrawRectangleLines(buttonX, buttonY, buttonWidth, buttonHeight, BLACK);
+                    DrawText(gChoices[i].text, buttonX + 10, buttonY + 10, choiceFont, BLACK);
+    
+                    if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) &&
+                        CheckCollisionPointRec(GetMousePosition(), buttonRect)) {
+                        gChoiceCount = 0;
+                        LoadScene(gChoices[i].scene);
                     }
                 }
             }
-            break;
-            default: break;
-        }
         EndDrawing();
     }
+
+    if (gHasBackground) UnloadTexture(gBackground);
+    for (int i = 0; i < gSpriteCount; i++)
+        UnloadTexture(gSprites[i].texture);
+    if (gHasMusic) {
+        StopMusicStream(gMusic);
+        UnloadMusicStream(gMusic);
+    }
+    lua_close(gL);
     CloseAudioDevice();
     CloseWindow();
     return 0;
