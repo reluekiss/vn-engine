@@ -27,9 +27,9 @@ build/main: build src/main.c $(OBJ)
 build/boundedtext.o: build src/boundedtext.c src/boundedtext.h
 	$(CC) -c $(CFLAGS) -o build/boundedtext.o src/boundedtext.c 
 
-lua: build
+lua: build $(OBJ)
 	$(MAKE) -C external/lua-5.4.7
-	$(CC) $(CFLAGS) src/luamain.c build/lua/lib/liblua.a -o build/luamain -Ibuild/lua/include $(LIBS)
+	$(CC) $(CFLAGS) src/luamain.c build/lua/lib/liblua.a $(OBJ) -o build/luamain -Ibuild/lua/include $(LIBS)
 
 build:
 	mkdir -p build
