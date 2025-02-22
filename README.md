@@ -22,3 +22,5 @@ last_scene
 ```
 
 To see an example look inside assets/scenes, currently the initial scene is hard coded to be main.lua.
+
+DISCLAIMER: I make no claims of ownership over any of the binary assets of included libraries under the externals directory, furthermore their functioning is not at the discretions of their creators and may behave differently then expected due to changes I have made to them.
