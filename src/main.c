@@ -32,6 +32,7 @@ typedef struct {
 } Choice;
 
 /* Global state */
+static bool gQuit = false;
 static Texture2D gBackground;
 static bool gHasBackground = false;
 
@@ -43,6 +44,7 @@ static bool gHasMusic = false;
 
 static char gDialogText[BUFFER_SIZE] = "";
 static char gDialogName[BUFFER_SIZE] = "";
+static Color gTextColor = WHITE;
 static bool gHasDialog = false;
 static Vector2 gDialogPos;
 static bool gDialogHasPos = false;
@@ -184,6 +186,23 @@ static int l_show_text(lua_State *L) {
     } else {
         gDialogHasPos = false;
     }
+    if (lua_gettop(L) >= 5 && lua_istable(L, 5)) {
+        lua_getfield(L, 5, "r");
+        int r = luaL_optinteger(L, -1, 255);
+        lua_pop(L, 1);
+        lua_getfield(L, 5, "g");
+        int g = luaL_optinteger(L, -1, 255);
+        lua_pop(L, 1);
+        lua_getfield(L, 5, "b");
+        int b = luaL_optinteger(L, -1, 255);
+        lua_pop(L, 1);
+        lua_getfield(L, 5, "a");
+        int a = luaL_optinteger(L, -1, 255);
+        lua_pop(L, 1);
+        gTextColor = (Color){ r, g, b, a };
+    } else {
+        gTextColor = WHITE;
+    }
     TraceLog(LOG_INFO, "Show text: %s", gDialogText);
     return lua_yield(L, 0);
 }
@@ -218,6 +237,11 @@ static int l_set_choices(lua_State *L) {
     }
     return lua_yield(L, 0);
 }
+static int l_quit(lua_State *L) {
+    (void)L;
+    gQuit = true;
+    return 0;
+}
 
 int main(void) {
     const int screenWidth = 800, screenHeight = 450;
@@ -242,11 +266,13 @@ int main(void) {
     lua_register(gL, "show_text", l_show_text);
     lua_register(gL, "clear_text", l_clear_text);
     lua_register(gL, "set_choices", l_set_choices);
+    lua_register(gL, "quit", l_quit);
 
-    LoadScene("script.lua");
+    LoadScene("main.lua");
 
     SetTargetFPS(60);
-    while (!WindowShouldClose()) {
+    while (!gQuit) {
+        if (WindowShouldClose()) gQuit = true;
         if (gHasMusic) UpdateMusicStream(gMusic);
     
         if (gHasDialog && gChoiceCount == 0) {
@@ -318,7 +344,7 @@ int main(void) {
                 DrawRectangleRec(textBox, Fade(BLACK, 0.5f));
                 if (gDialogName[0])
                     DrawText(gDialogName, textBox.x + 5, textBox.y - 25, 20, WHITE);
-                DrawTextBoxed(GetFontDefault(), gDialogText, innerBox, 20, 2, true, WHITE);
+                DrawTextBoxed(GetFontDefault(), gDialogText, innerBox, 20, 2, true, gTextColor);
             }
             if (gChoiceCount > 0) {
                 int choiceFont = 20;
