@@ -8,11 +8,7 @@
 #include "../build/lua/include/lualib.h"
 #include "../build/lua/include/lauxlib.h"
 
-#if defined(PLATFORM_DESKTOP)
-    #define GLSL_VERSION            330
-#else   // PLATFORM_ANDROID, PLATFORM_WEB
-    #define GLSL_VERSION            100
-#endif
+#define GLSL_VERSION 330
 
 #define PATH_BUFFER_SIZE 512
 #define BUFFER_SIZE 256
