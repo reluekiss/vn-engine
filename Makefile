@@ -4,6 +4,7 @@ ifeq ($(PLATFORM), linux)
     CC = cc
     LIBS = -lraylib -lm
     CFLAGS = -O3 -ggdb -Wall -Wextra
+	LUA_CFLAGS = -DLUA_USE_POSIX
 else ifeq ($(PLATFORM), darwin)
     CC = cc
     LIBS = -lraylib -lm
@@ -23,7 +24,7 @@ all: build/main
 
 build/main: build $(OBJ)
 	mkdir -p build/lua/include
-	make -C external/lua-5.4.7/src a
+	make CFLAGS=$(LUA_CFLAGS) -C external/lua-5.4.7/src a
 	install -p -m 644 $(HEAD) build/lua/include
 	install -p external/lua-5.4.7/src/liblua.a build/lua
 	$(CC) $(CFLAGS) src/main.c build/lua/liblua.a $(OBJ) -o build/main -Ibuild/lua/include $(LIBS)

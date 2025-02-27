@@ -44,6 +44,7 @@ static bool gHasMusic = false;
 
 static char gDialogText[BUFFER_SIZE] = "";
 static char gDialogName[BUFFER_SIZE] = "";
+static Color gNameColor = WHITE;
 static Color gTextColor = WHITE;
 static bool gHasDialog = false;
 static Vector2 gDialogPos;
@@ -173,30 +174,47 @@ static int l_show_text(lua_State *L) {
     gDialogText[BUFFER_SIZE - 1] = '\0';
     gHasDialog = true;
     if (lua_gettop(L) >= 2 && lua_isstring(L, 2)) {
-        const char *name = lua_tostring(L, 2);
+        const char *name = lua_tostring(L, -1);
         strncpy(gDialogName, name, BUFFER_SIZE - 1);
         gDialogName[BUFFER_SIZE - 1] = '\0';
     } else {
         gDialogName[0] = '\0';
     }
-    if (lua_gettop(L) >= 4 && lua_isnumber(L, 3) && lua_isnumber(L, 4)) {
-        gDialogPos.x = (float)lua_tointeger(L, 3);
-        gDialogPos.y = (float)lua_tointeger(L, 4);
+    if (lua_gettop(L) >= 3 && lua_istable(L, 3)) {
+        lua_getfield(L, 3, "r");
+        int r = luaL_optinteger(L, -1, 255);
+        lua_pop(L, 1);
+        lua_getfield(L, 3, "g");
+        int g = luaL_optinteger(L, -1, 255);
+        lua_pop(L, 1);
+        lua_getfield(L, 3, "b");
+        int b = luaL_optinteger(L, -1, 255);
+        lua_pop(L, 1);
+        lua_getfield(L, 3, "a");
+        int a = luaL_optinteger(L, -1, 255);
+        lua_pop(L, 1);
+        gNameColor = (Color){ r, g, b, a };
+    } else {
+        gNameColor = WHITE;
+    }
+    if (lua_gettop(L) >= 5 && lua_isnumber(L, 4) && lua_isnumber(L, 5)) {
+        gDialogPos.x = (float)lua_tointeger(L, 4);
+        gDialogPos.y = (float)lua_tointeger(L, 5);
         gDialogHasPos = true;
     } else {
         gDialogHasPos = false;
     }
-    if (lua_gettop(L) >= 5 && lua_istable(L, 5)) {
-        lua_getfield(L, 5, "r");
+    if (lua_gettop(L) >= 6 && lua_istable(L, 6)) {
+        lua_getfield(L, 6, "r");
         int r = luaL_optinteger(L, -1, 255);
         lua_pop(L, 1);
-        lua_getfield(L, 5, "g");
+        lua_getfield(L, 6, "g");
         int g = luaL_optinteger(L, -1, 255);
         lua_pop(L, 1);
-        lua_getfield(L, 5, "b");
+        lua_getfield(L, 6, "b");
         int b = luaL_optinteger(L, -1, 255);
         lua_pop(L, 1);
-        lua_getfield(L, 5, "a");
+        lua_getfield(L, 6, "a");
         int a = luaL_optinteger(L, -1, 255);
         lua_pop(L, 1);
         gTextColor = (Color){ r, g, b, a };
@@ -343,7 +361,7 @@ int main(void) {
                                        textBox.width - 2 * textPadding, textBox.height - 2 * textPadding };
                 DrawRectangleRec(textBox, Fade(BLACK, 0.5f));
                 if (gDialogName[0])
-                    DrawText(gDialogName, textBox.x + 5, textBox.y - 25, 20, WHITE);
+                    DrawText(gDialogName, textBox.x + 5, textBox.y - 25, 20, gNameColor);
                 DrawTextBoxed(GetFontDefault(), gDialogText, innerBox, 20, 2, true, gTextColor);
             }
             if (gChoiceCount > 0) {
