@@ -4,7 +4,7 @@ ifeq ($(PLATFORM), linux)
     CC = cc
     LIBS = -lraylib -lm
     CFLAGS = -O3 -ggdb -Wall -Wextra
-	LUA_CFLAGS = -DLUA_USE_POSIX
+    LUA_CFLAGS = -DLUA_USE_POSIX
 else ifeq ($(PLATFORM), darwin)
     CC = cc
     LIBS = -lraylib -lm

@@ -23,7 +23,7 @@ last_scene
 
 The tables given as inputs to the C functions have the following defined types in C, however keep in mind that you can have as much additional data on these tables as long as it is after the defined fields (assets/scenes/water_scene.lua):
 ```
-color = { int r, int g, int b, int a }
+color = { uint8 r, uint8 g, uint8 b, uint8 a }
 choice = { string choiceText, string filepath )
 ```
 
