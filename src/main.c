@@ -348,7 +348,7 @@ int main(void) {
             int fontSize = 20;
             int padding = 10;
             Rectangle dialog = { (float)GetScreenWidth()/2 - 200, (float)GetScreenHeight()/2 - 150, 400, 300 };
-            for (int i = 0; i < scenes.count; i++) {
+            for (uint i = 0; i < scenes.count; i++) {
                 const char* fileName = GetFileName(scenes.paths[i]);
                 int textWidth = MeasureText(fileName, fontSize);
                 int textHeight = fontSize;
@@ -364,6 +364,7 @@ int main(void) {
                     UnloadDirectoryFiles(scenes);
                 }
             }
+            break;
         }
         case GAME: {
             if (gHasMusic) UpdateMusicStream(gMusic);
@@ -462,8 +463,9 @@ int main(void) {
                     }
                 }
             }
-            }
-        }
+            break;
+            } default: break;
+        } 
         EndDrawing();
     }
 
