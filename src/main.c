@@ -57,6 +57,8 @@ static int gChoiceCount = 0;
 static Character gCharacters[MAX_SPRITES];
 static int gCharacterCount = 0;
 
+static const char* gModuleFolder = "";
+
 static lua_State *gL = NULL;
 static lua_State *gSceneThread = NULL;
 
@@ -73,7 +75,7 @@ static void LoadScene(const char *sceneFile) {
     lua_setglobal(gL, "last_scene");
 
     char path[PATH_BUFFER_SIZE];
-    snprintf(path, PATH_BUFFER_SIZE, "assets/scenes/%s", sceneFile);
+    snprintf(path, PATH_BUFFER_SIZE, "assets/scenes/%s/%s", gModuleFolder, sceneFile);
     gSceneThread = lua_newthread(gL);
     if (luaL_loadfile(gSceneThread, path) != LUA_OK) {
         const char *error = lua_tostring(gSceneThread, -1);
@@ -89,6 +91,11 @@ static void LoadScene(const char *sceneFile) {
 }
 
 /* Lua API */
+static int l_module_init(lua_State *L) {
+    gModuleFolder = luaL_checkstring(L, 1);
+    return 0;
+}
+
 static int l_create_character(lua_State *L) {
     Color color = WHITE;
     if (lua_gettop(L) >= 1 && lua_istable(L, 1)) {
@@ -296,6 +303,10 @@ static int l_quit(lua_State *L) {
 }
 
 int main(void) {
+    enum {
+        TITLE,
+        GAME,
+    } screen = TITLE;
     const int screenWidth = 800, screenHeight = 450;
     // Proportions for text box
     const float defaultXRel = 60.0f / (float)screenWidth;
@@ -322,28 +333,53 @@ int main(void) {
     lua_register(gL, "create_character", l_create_character);
     lua_register(gL, "destroy_character", l_destroy_character);
     lua_register(gL, "modify_character", l_modify_character);
+    lua_register(gL, "module_init", l_module_init);
 
-    LoadScene("main.lua");
+    FilePathList scenes = LoadDirectoryFilesEx("assets/scenes", ".lua", 0);
 
     SetTargetFPS(60);
     while (!gQuit) {
         if (WindowShouldClose()) gQuit = true;
-        if (gHasMusic) UpdateMusicStream(gMusic);
-    
-        if (gHasDialog && gChoiceCount == 0) {
-            if (lua_status(gSceneThread) == LUA_YIELD &&
-                (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) || IsKeyPressed(KEY_SPACE))) {
-                int nres = 0;
-                int status = lua_resume(gSceneThread, gL, 0, &nres);
-                if (status != LUA_YIELD && status != LUA_OK) {
-                    const char *error = lua_tostring(gSceneThread, -1);
-                    fprintf(stderr, "Error resuming scene: %s\n", error);
+        BeginDrawing();
+        ClearBackground(RAYWHITE);
+        switch (screen) {
+        case TITLE: {
+            Vector2 mousePoint = GetMousePosition();
+            int fontSize = 20;
+            int padding = 10;
+            Rectangle dialog = { (float)GetScreenWidth()/2 - 200, (float)GetScreenHeight()/2 - 150, 400, 300 };
+            for (int i = 0; i < scenes.count; i++) {
+                const char* fileName = GetFileName(scenes.paths[i]);
+                int textWidth = MeasureText(fileName, fontSize);
+                int textHeight = fontSize;
+                float optX = dialog.x + (dialog.width - (textWidth + 2 * padding)) / 2.0f;
+                float optY = dialog.y + 50 + i * (textHeight + 2 * padding + 10);
+                Rectangle optRect = { optX, optY, textWidth + 2 * padding, textHeight + 2 * padding };
+                DrawRectangleRec(optRect, Fade(LIGHTGRAY, 0.8f));
+                DrawRectangleLinesEx(optRect, 2, WHITE);
+                DrawText(fileName, optRect.x + padding, optRect.y + padding, fontSize, BLACK);
+                if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) && CheckCollisionPointRec(mousePoint, optRect)) {
+                    LoadScene(GetFileName(scenes.paths[i]));
+                    screen = GAME;
+                    UnloadDirectoryFiles(scenes);
                 }
             }
         }
+        case GAME: {
+            if (gHasMusic) UpdateMusicStream(gMusic);
     
-        BeginDrawing();
-            ClearBackground(RAYWHITE);
+            if (gHasDialog && gChoiceCount == 0) {
+                if (lua_status(gSceneThread) == LUA_YIELD &&
+                    (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) || IsKeyPressed(KEY_SPACE))) {
+                    int nres = 0;
+                    int status = lua_resume(gSceneThread, gL, 0, &nres);
+                    if (status != LUA_YIELD && status != LUA_OK) {
+                        const char *error = lua_tostring(gSceneThread, -1);
+                        fprintf(stderr, "Error resuming scene: %s\n", error);
+                    }
+                }
+            }
+    
             if (gHasBackground) {
                 Texture2D bgTex = gBackground;
                 int windowWidth = GetScreenWidth(), windowHeight = GetScreenHeight();
@@ -426,6 +462,8 @@ int main(void) {
                     }
                 }
             }
+            }
+        }
         EndDrawing();
     }
 

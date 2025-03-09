@@ -3,7 +3,7 @@ local scene_map = {
         unload_sprite("Fairy")
         show_text("You have returned to the clearing...", "Narrator")
     end,
-    ["main.lua"] = function()
+    ["test_main.lua"] = function()
         load_background("bg_forest.png")
         play_music("adventure.mp3")
         show_text("You awaken in a mysterious forest. The air is thick with magic...", "Narrator")
