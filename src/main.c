@@ -4,9 +4,9 @@
 #include <string.h>
 #include "raylib.h"
 #include "boundedtext.h"
-#include "../build/lua/include/lua.h"
-#include "../build/lua/include/lualib.h"
-#include "../build/lua/include/lauxlib.h"
+#include "../build/lua/lua.h"
+#include "../build/lua/lualib.h"
+#include "../build/lua/lauxlib.h"
 
 #define GLSL_VERSION 330
 
@@ -219,7 +219,7 @@ static int l_play_music(lua_State *L) {
 static int l_play_sound(lua_State *L) {
     const char *file = luaL_checkstring(L, 1);
     char path[PATH_BUFFER_SIZE];
-    snprintf(path, PATH_BUFFER_SIZE, "mods%s/music/%s", gModuleFolder, file);
+    snprintf(path, PATH_BUFFER_SIZE, "mods/%s/music/%s", gModuleFolder, file);
     Sound s = LoadSound(path);
     PlaySound(s);
     TraceLog(LOG_INFO, "Played sound: %s", file);
@@ -314,7 +314,7 @@ int main(void) {
     const float defaultWidthRel = 685.0f / (float)screenWidth;
     const float defaultHeightRel = 100.0f / (float)screenHeight;
 
-    InitWindow(screenWidth, screenHeight, "LuaJIT Engine");
+    InitWindow(screenWidth, screenHeight, "VN Engine");
     InitAudioDevice();
     Shader spriteOutline = LoadShader(0, TextFormat("src/outline-%i.fs", GLSL_VERSION));
 

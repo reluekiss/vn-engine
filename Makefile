@@ -23,11 +23,11 @@ OBJ = build/boundedtext.o
 all: build/main
 
 build/main: build $(OBJ)
-	mkdir -p build/lua/include
+	mkdir -p build/lua
 	make CFLAGS=$(LUA_CFLAGS) -C external/lua-5.4.7/src a
-	install -p -m 644 $(HEAD) build/lua/include
+	install -p -m 644 $(HEAD) build/lua
 	install -p external/lua-5.4.7/src/liblua.a build/lua
-	$(CC) $(CFLAGS) src/main.c build/lua/liblua.a $(OBJ) -o build/main -Ibuild/lua/include $(LIBS)
+	$(CC) $(CFLAGS) src/main.c build/lua/liblua.a $(OBJ) -o build/main -Ibuild/lua $(LIBS)
 
 build/boundedtext.o: build src/boundedtext.c src/boundedtext.h
 	$(CC) -c $(CFLAGS) -o build/boundedtext.o src/boundedtext.c 
