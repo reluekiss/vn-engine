@@ -75,7 +75,7 @@ static void LoadScene(const char *sceneFile) {
     lua_setglobal(gL, "last_scene");
 
     char path[PATH_BUFFER_SIZE];
-    snprintf(path, PATH_BUFFER_SIZE, "assets/scenes/%s/%s", gModuleFolder, sceneFile);
+    snprintf(path, PATH_BUFFER_SIZE, "mods/%s/%s", gModuleFolder, sceneFile);
     gSceneThread = lua_newthread(gL);
     if (luaL_loadfile(gSceneThread, path) != LUA_OK) {
         const char *error = lua_tostring(gSceneThread, -1);
@@ -146,7 +146,7 @@ static int l_modify_character(lua_State *L) {
 static int l_load_background(lua_State *L) {
     const char *file = luaL_checkstring(L, 1);
     char path[PATH_BUFFER_SIZE];
-    snprintf(path, PATH_BUFFER_SIZE, "assets/images/%s", file);
+    snprintf(path, PATH_BUFFER_SIZE, "mods/%s/images/%s", gModuleFolder, file);
     if (gHasBackground) UnloadTexture(gBackground);
     gBackground = LoadTexture(path);
     gHasBackground = true;
@@ -165,7 +165,7 @@ static int l_load_sprite(lua_State *L) {
 
     if (gSpriteCount >= MAX_SPRITES) return -1;
     char path[PATH_BUFFER_SIZE];
-    snprintf(path, PATH_BUFFER_SIZE, "assets/images/%s", file);
+    snprintf(path, PATH_BUFFER_SIZE, "mods/%s/images/%s", gModuleFolder, file);
     Texture2D tex = LoadTexture(path);
     gSprites[gSpriteCount].texture = tex;
     gSprites[gSpriteCount].pos = pos;
@@ -202,7 +202,7 @@ static int l_play_music(lua_State *L) {
     if (lua_gettop(L) >= 2 && lua_isnumber(L, 2))
         start = lua_tonumber(L, 2);
     char path[PATH_BUFFER_SIZE];
-    snprintf(path, PATH_BUFFER_SIZE, "assets/music/%s", file);
+    snprintf(path, PATH_BUFFER_SIZE, "mods/%s/music/%s", gModuleFolder, file);
     if (gHasMusic) {
         StopMusicStream(gMusic);
         UnloadMusicStream(gMusic);
@@ -219,7 +219,7 @@ static int l_play_music(lua_State *L) {
 static int l_play_sound(lua_State *L) {
     const char *file = luaL_checkstring(L, 1);
     char path[PATH_BUFFER_SIZE];
-    snprintf(path, PATH_BUFFER_SIZE, "assets/sounds/%s", file);
+    snprintf(path, PATH_BUFFER_SIZE, "mods%s/music/%s", gModuleFolder, file);
     Sound s = LoadSound(path);
     PlaySound(s);
     TraceLog(LOG_INFO, "Played sound: %s", file);
@@ -316,7 +316,7 @@ int main(void) {
 
     InitWindow(screenWidth, screenHeight, "LuaJIT Engine");
     InitAudioDevice();
-    Shader spriteOutline = LoadShader(0, TextFormat("assets/shaders/outline-%i.fs", GLSL_VERSION));
+    Shader spriteOutline = LoadShader(0, TextFormat("src/outline-%i.fs", GLSL_VERSION));
 
     gL = luaL_newstate();
     luaL_openlibs(gL);
@@ -335,7 +335,7 @@ int main(void) {
     lua_register(gL, "modify_character", l_modify_character);
     lua_register(gL, "module_init", l_module_init);
 
-    FilePathList scenes = LoadDirectoryFilesEx("assets/scenes", ".lua", 0);
+    FilePathList scenes = LoadDirectoryFilesEx("mods", ".lua", 0);
 
     SetTargetFPS(60);
     while (!gQuit) {
