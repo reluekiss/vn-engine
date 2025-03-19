@@ -10,16 +10,11 @@ void load_sprite(string filepath, float x, float y, string id) // Draw a sprite 
 void unload_sprite(string id) // Unload a sprite so that it is no longer drawn.
 void play_music(string filepath, float startTime) // Play a song until a new one is loaded (loops)
 void play_sound(string filepath) // Play a sound once.
-void show_text(string text, string name, float x, float y, table textColor) // Draws text.
+void show_text(table character, string text, table textColor, float x, float y) // Draws text.
 void clear_text() // Clears the current text.
 void set_choices(table choice) // Creates a list of buttons which move you to a new scene.
 void quit() // Exit program.
 void module_init(string folder) // Sets a prefix folder to access scenes from.
-
-// under construction
-int idx create_character(table color)
-void destroy_character(int idx)
-void modify_character(int idx, table color)
 ```
 
 And the following global variables:
@@ -31,6 +26,7 @@ The tables given as inputs to the C functions have the following defined types i
 ```
 color = { uint8 r, uint8 g, uint8 b, uint8 a }
 choice = { string text, string scene )
+character = { string name, table color }
 ```
 
 To see an example look inside mods. It is recommeded to create a new folder in which to store the additional scene files to not clutter the scenes folder and to allow for easier differentiation between projects, use module_init for applying a prefix.

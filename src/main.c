@@ -27,12 +27,6 @@ typedef struct {
     char scene[BUFFER_SIZE];
 } Choice;
 
-typedef struct {
-    char name[BUFFER_SIZE];
-    Color color;
-    int idx;
-} Character;
-
 /* Global state */
 static bool gQuit = false;
 static Texture2D gBackground;
@@ -47,15 +41,13 @@ static bool gHasMusic = false;
 static char gDialogText[BUFFER_SIZE] = "";
 static char gDialogName[BUFFER_SIZE] = "";
 static Color gTextColor = WHITE;
+static Color gDialogNameColor = WHITE;
 static bool gHasDialog = false;
 static Vector2 gDialogPos;
 static bool gDialogHasPos = false;
 
 static Choice gChoices[MAX_CHOICES];
 static int gChoiceCount = 0;
-
-static Character gCharacters[MAX_SPRITES];
-static int gCharacterCount = 0;
 
 static const char* gModuleFolder = "";
 
@@ -93,53 +85,6 @@ static void LoadScene(const char *sceneFile) {
 /* Lua API */
 static int l_module_init(lua_State *L) {
     gModuleFolder = luaL_checkstring(L, 1);
-    return 0;
-}
-
-static int l_create_character(lua_State *L) {
-    Color color = WHITE;
-    if (lua_gettop(L) >= 1 && lua_istable(L, 1)) {
-        lua_getfield(L, 1, "r");
-        int r = luaL_optinteger(L, -1, 255);
-        lua_pop(L, 1);
-        lua_getfield(L, 1, "g");
-        int g = luaL_optinteger(L, -1, 255);
-        lua_pop(L, 1);
-        lua_getfield(L, 1, "b");
-        int b = luaL_optinteger(L, -1, 255);
-        lua_pop(L, 1);
-        lua_getfield(L, 1, "a");
-        int a = luaL_optinteger(L, -1, 255);
-        lua_pop(L, 1);
-        color = (Color){ r, g, b, a };
-    }
-
-    gCharacters[gCharacterCount].color = color;
-    TraceLog(LOG_INFO, "Loaded character, with id: %d", gCharacterCount);
-    gCharacterCount++;
-    return gCharacterCount - 1;
-}
-
-// TODO: currently this garbles the array index
-static int l_destroy_character(lua_State *L) {
-    int idx = 0;
-    if (lua_gettop(L) >= 1 && lua_isnumber(L, 1)) {
-        idx = (float)lua_tointeger(L, 1);
-        for (int i = idx; i < gCharacterCount - 1; i++) {
-            gCharacters[i] = gCharacters[i+1];
-        }
-        TraceLog(LOG_ERROR, "Destroyed character, with id: %d", idx);
-        gCharacterCount--;
-        return 0;         
-    } else {
-        TraceLog(LOG_ERROR, "Failed to destroy character, with id: %d", idx);
-        return 1;
-    }
-}
-
-static int l_modify_character(lua_State *L) {
-    (void)L;
-    printf("WARNING: TODO");
     return 0;
 }
 
@@ -227,41 +172,64 @@ static int l_play_sound(lua_State *L) {
 }
 
 static int l_show_text(lua_State *L) {
-    const char *text = luaL_checkstring(L, 1);
+    luaL_checktype(L, 1, LUA_TTABLE);
+    lua_getfield(L, 1, "name");
+    const char *char_name = luaL_checkstring(L, -1);
+    strncpy(gDialogName, char_name, BUFFER_SIZE - 1);
+    gDialogName[BUFFER_SIZE - 1] = '\0';
+    lua_pop(L, 1);
+
+    lua_getfield(L, 1, "color");
+    if (lua_istable(L, -1)) {
+        lua_getfield(L, -1, "r");
+        int r = luaL_optinteger(L, -1, 255);
+        lua_pop(L, 1);
+        lua_getfield(L, -1, "g");
+        int g = luaL_optinteger(L, -1, 255);
+        lua_pop(L, 1);
+        lua_getfield(L, -1, "b");
+        int b = luaL_optinteger(L, -1, 255);
+        lua_pop(L, 1);
+        lua_getfield(L, -1, "a");
+        int a = luaL_optinteger(L, -1, 255);
+        lua_pop(L, 1);
+        gDialogNameColor = (Color){ r, g, b, a };
+    } else {
+        gDialogNameColor = WHITE;
+    }
+    lua_pop(L, 1); // pop color table
+
+    const char *text = luaL_checkstring(L, 2);
     strncpy(gDialogText, text, BUFFER_SIZE - 1);
     gDialogText[BUFFER_SIZE - 1] = '\0';
-    gHasDialog = true;
-    if (lua_gettop(L) >= 2 && lua_isstring(L, 2)) {
-        const char *name = lua_tostring(L, 2);
-        strncpy(gDialogName, name, BUFFER_SIZE - 1);
-        gDialogName[BUFFER_SIZE - 1] = '\0';
+
+    if (lua_gettop(L) >= 3 && lua_istable(L, 3)) {
+        lua_getfield(L, 3, "r");
+        int tr = luaL_optinteger(L, -1, 255);
+        lua_pop(L, 1);
+        lua_getfield(L, 3, "g");
+        int tg = luaL_optinteger(L, -1, 255);
+        lua_pop(L, 1);
+        lua_getfield(L, 3, "b");
+        int tb = luaL_optinteger(L, -1, 255);
+        lua_pop(L, 1);
+        lua_getfield(L, 3, "a");
+        int ta = luaL_optinteger(L, -1, 255);
+        lua_pop(L, 1);
+        gTextColor = (Color){ tr, tg, tb, ta };
     } else {
-        gDialogName[0] = '\0';
+        gTextColor = WHITE;
     }
-    if (lua_gettop(L) >= 4 && lua_isnumber(L, 3) && lua_isnumber(L, 4)) {
-        gDialogPos.x = (float)lua_tointeger(L, 3);
-        gDialogPos.y = (float)lua_tointeger(L, 4);
+
+    if (lua_gettop(L) >= 5 && lua_isnumber(L, 4) && lua_isnumber(L, 4)) {
+        gDialogPos.x = (float)lua_tointeger(L, 4);
+        gDialogPos.y = (float)lua_tointeger(L, 5);
         gDialogHasPos = true;
     } else {
         gDialogHasPos = false;
     }
-    if (lua_gettop(L) >= 5 && lua_istable(L, 5)) {
-        lua_getfield(L, 5, "r");
-        int r = luaL_optinteger(L, -1, 255);
-        lua_pop(L, 1);
-        lua_getfield(L, 5, "g");
-        int g = luaL_optinteger(L, -1, 255);
-        lua_pop(L, 1);
-        lua_getfield(L, 5, "b");
-        int b = luaL_optinteger(L, -1, 255);
-        lua_pop(L, 1);
-        lua_getfield(L, 5, "a");
-        int a = luaL_optinteger(L, -1, 255);
-        lua_pop(L, 1);
-        gTextColor = (Color){ r, g, b, a };
-    } else {
-        gTextColor = WHITE;
-    }
+
+    gHasDialog = true;
     TraceLog(LOG_INFO, "Show text: %s", gDialogText);
     return lua_yield(L, 0);
 }
@@ -330,9 +298,6 @@ int main(void) {
     lua_register(gL, "clear_text", l_clear_text);
     lua_register(gL, "set_choices", l_set_choices);
     lua_register(gL, "quit", l_quit);
-    lua_register(gL, "create_character", l_create_character);
-    lua_register(gL, "destroy_character", l_destroy_character);
-    lua_register(gL, "modify_character", l_modify_character);
     lua_register(gL, "module_init", l_module_init);
 
     FilePathList scenes = LoadDirectoryFilesEx("mods", ".lua", 0);
@@ -435,17 +400,14 @@ int main(void) {
                                        textBox.width - 2 * textPadding, textBox.height - 2 * textPadding };
                 DrawRectangleRec(textBox, Fade(BLACK, 0.5f));
                 
-                Color nameColor = WHITE;
-                for (int i = 0; i < gCharacterCount; i++) {
-                    if (strcmp(gCharacters[i].name, gDialogName) == 0) nameColor = gCharacters[i].color;
-                }
                 if (gDialogName[0])
-                    DrawText(gDialogName, textBox.x + 5, textBox.y - 25, 20, nameColor);
+                    DrawText(gDialogName, textBox.x + 5, textBox.y - 25, 20, gDialogNameColor);
                 DrawTextBoxed(GetFontDefault(), gDialogText, innerBox, 20, 2, true, gTextColor);
             }
             if (gChoiceCount > 0) {
                 int choiceFont = 20;
-                int spacing = 20, buttonHeight = 40, startY = 150;
+                int spacing = 20, buttonHeight = 40;
+                int startY = (GetScreenHeight() / 2) - (gChoiceCount * buttonHeight);
                 for (int i = 0; i < gChoiceCount; i++) {
                     int textWidth = MeasureText(gChoices[i].text, choiceFont);
                     int buttonWidth = textWidth + 20;
