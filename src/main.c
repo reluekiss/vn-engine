@@ -197,7 +197,7 @@ static int l_show_text(lua_State *L) {
     } else {
         gDialogNameColor = WHITE;
     }
-    lua_pop(L, 1); // pop color table
+    lua_pop(L, 1);
 
     const char *text = luaL_checkstring(L, 2);
     strncpy(gDialogText, text, BUFFER_SIZE - 1);
@@ -222,8 +222,8 @@ static int l_show_text(lua_State *L) {
     }
 
     if (lua_gettop(L) >= 5 && lua_isnumber(L, 4) && lua_isnumber(L, 4)) {
-        gDialogPos.x = (float)lua_tointeger(L, 4);
-        gDialogPos.y = (float)lua_tointeger(L, 5);
+        gDialogPos.x = ((float)GetScreenWidth() / 2) - lua_tointeger(L, 4);
+        gDialogPos.y = ((float)GetScreenHeight() / 2 ) + lua_tointeger(L, 5);
         gDialogHasPos = true;
     } else {
         gDialogHasPos = false;
