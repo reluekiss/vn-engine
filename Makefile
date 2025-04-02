@@ -3,7 +3,9 @@ PLATFORM ?= linux
 ifeq ($(PLATFORM), linux)
     CC = cc
     LIBS = -lraylib -lm
-    CFLAGS = -O3 -ggdb -Wall -Wextra
+    CFLAGS = -O3 -ggdb -Wall -Wextra -Wformat -Wformat=2 -Wimplicit-fallthrough -Werror=format-security -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -D_GLIBCXX_ASSERTIONS -fstrict-flex-arrays=3 -fstack-clash-protection -fstack-protector-strong
+    CNOOB = -ffunction-sections -fdata-sections -flto
+    LDFLAGS = -Wl,--gc-sections -s -Wl,-z,nodlopen -Wl,-z,noexecstack -Wl,-z,relro -Wl,-z,now -Wl,--as-needed -Wl,--no-copy-dt-needed-entries
     LUA_CFLAGS = -DLUA_USE_POSIX
 else ifeq ($(PLATFORM), darwin)
     CC = cc
@@ -12,7 +14,7 @@ else ifeq ($(PLATFORM), darwin)
 else ifeq ($(PLATFORM), windows)
     CC = gcc
     LIBS = -lraylib -lm -lgdi32 -lwinmm
-    CFLAGS = -DWINDOWS -O3 -g -Wall -Wextra
+    CFLAGS = -O3 -g -Wall -Wextra
 else
     $(error Unsupported platform: $(PLATFORM))
 endif
@@ -27,7 +29,7 @@ build/main: build $(OBJ)
 	make CFLAGS=$(LUA_CFLAGS) -C external/lua-5.4.7/src a
 	install -p -m 644 $(HEAD) build/lua
 	install -p external/lua-5.4.7/src/liblua.a build/lua
-	$(CC) $(CFLAGS) src/main.c build/lua/liblua.a $(OBJ) -o build/main -Ibuild/lua $(LIBS)
+	$(CC) $(CFLAGS) $(CNOOB) src/main.c build/lua/liblua.a $(OBJ) -o build/main -Ibuild/lua $(LIBS) $(LDFLAGS)
 
 build/boundedtext.o: build src/boundedtext.c src/boundedtext.h
 	$(CC) -c $(CFLAGS) -o build/boundedtext.o src/boundedtext.c 

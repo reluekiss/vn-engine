@@ -17,7 +17,7 @@
 // Draw text using font inside rectangle limits with support for text selection
 static void DrawTextBoxedSelectable(Font font, const char *text, Rectangle rec, float fontSize, float spacing, bool wordWrap, Color tint, int selectStart, int selectLength, Color selectTint, Color selectBackTint)
 {
-    int length = TextLength(text);  // Total length in bytes of the text, scanned by codepoints in loop
+    int length = (int)TextLength(text);  // Total length in bytes of the text, scanned by codepoints in loop
 
     float textOffsetY = 0;          // Offset between lines (on line break '\n')
     float textOffsetX = 0.0f;       // Offset X to next character to draw
@@ -47,7 +47,7 @@ static void DrawTextBoxedSelectable(Font font, const char *text, Rectangle rec, 
         float glyphWidth = 0;
         if (codepoint != '\n')
         {
-            glyphWidth = (font.glyphs[index].advanceX == 0) ? font.recs[index].width*scaleFactor : font.glyphs[index].advanceX*scaleFactor;
+            glyphWidth = (font.glyphs[index].advanceX == 0) ? font.recs[index].width*scaleFactor : (float)font.glyphs[index].advanceX*scaleFactor;
 
             if (i + 1 < length) glyphWidth = glyphWidth + spacing;
         }
@@ -96,7 +96,7 @@ static void DrawTextBoxedSelectable(Font font, const char *text, Rectangle rec, 
             {
                 if (!wordWrap)
                 {
-                    textOffsetY += (font.baseSize + font.baseSize/2)*scaleFactor;
+                    textOffsetY += ((float)font.baseSize + ((float)font.baseSize)/2)*scaleFactor;
                     textOffsetX = 0;
                 }
             }
@@ -104,12 +104,12 @@ static void DrawTextBoxedSelectable(Font font, const char *text, Rectangle rec, 
             {
                 if (!wordWrap && ((textOffsetX + glyphWidth) > rec.width))
                 {
-                    textOffsetY += (font.baseSize + font.baseSize/2)*scaleFactor;
+                    textOffsetY += ((float)font.baseSize + ((float)font.baseSize)/2)*scaleFactor;
                     textOffsetX = 0;
                 }
 
                 // When text overflows rectangle height limit, just stop drawing
-                if ((textOffsetY + font.baseSize*scaleFactor) > rec.height) break;
+                if ((textOffsetY + ((float)font.baseSize)*scaleFactor) > rec.height) break;
 
                 // Draw selection background
                 bool isGlyphSelected = false;
@@ -128,7 +128,7 @@ static void DrawTextBoxedSelectable(Font font, const char *text, Rectangle rec, 
 
             if (wordWrap && (i == endLine))
             {
-                textOffsetY += (font.baseSize + font.baseSize/2)*scaleFactor;
+                    textOffsetY += ((float)font.baseSize + ((float)font.baseSize)/2)*scaleFactor;
                 textOffsetX = 0;
                 startLine = endLine;
                 endLine = -1;
