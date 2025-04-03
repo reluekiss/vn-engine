@@ -11,6 +11,7 @@ local scene_map = {
     end,
     ["scene_dark.lua"] = function()
         load_background("bg_forest.png")
+        play_music("adventure.mp3")
         show_text(Narrator, "You have returned to the clearing...")
     end
 }

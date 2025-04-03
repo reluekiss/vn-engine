@@ -16,7 +16,7 @@
 
 #define PATH_BUFFER_SIZE 512
 #define BUFFER_SIZE 256
-#define MAX_SPRITES 32
+#define CACHE_SIZE 32
 #define MAX_CHOICES 10
 
 typedef struct {
@@ -34,14 +34,24 @@ typedef struct {
 /* Global state */
 static bool gQuit = false;
 
-map(char *, Texture2D) backgroundCache;
-map(char *, Music)       musicCache;
-map(char *, Texture2D)   spriteCache; // We'll cache sprite textures here
+omap(char *, Texture2D) backgroundCache;
+omap(char *, Music)       musicCache;
+omap(char *, Texture2D)   spriteCache;
+list(char *) backgroundLRU;
+list(char *) musicLRU;
+list(char *) spriteLRU;
 
 typedef struct {
+    int nLevels;
+    lua_Debug frames[CACHE_SIZE];
+} LuaCallStack;
+
+typedef struct {
+    lua_State *sceneThread;
+    LuaCallStack callStack;
     Texture2D background;
     Music music;
-    Sprite sprites[MAX_SPRITES];
+    Sprite sprites[CACHE_SIZE];
     int spriteCount;
     bool hasMusic;
     bool isPaused;
@@ -58,7 +68,7 @@ typedef struct {
     const char* moduleFolder;
     char bgfile[PATH_BUFFER_SIZE];
     char musicfile[PATH_BUFFER_SIZE];
-    char spritefiles[MAX_SPRITES][PATH_BUFFER_SIZE];
+    char spritefiles[CACHE_SIZE][PATH_BUFFER_SIZE];
 } GameState;
 
 static GameState gGameState = {
@@ -102,7 +112,28 @@ enum {
 static char gCurrentScene[BUFFER_SIZE] = "";
 static char gLastScene[BUFFER_SIZE] = "";
 
+static void updateLRU(void *lruList, const char *key) {
+    for (char **iter = first(lruList); iter != end(lruList); iter = next(lruList, iter)) {
+        if (strcmp(*iter, key) == 0) {
+            erase(lruList, iter);
+            break;
+        }
+    }
+    insert(lruList, first(lruList), (char *)key);
+}
+
+void saveLuaCallStack(lua_State *L, LuaCallStack *stack) {
+    int level = 0;
+    while (level < CACHE_SIZE && lua_getstack(L, level, &stack->frames[level])) {
+        lua_getinfo(L, "nSl", &stack->frames[level]);
+        level++;
+    }
+    stack->nLevels = level;
+}
+// TODO: find a better way of recreating the call stack other than using the scene thread
 void pushGameState(void) {
+    gGameState.sceneThread = gSceneThread;
+    saveLuaCallStack(gSceneThread, &gGameState.callStack);
     push(&gameStateStack, gGameState);
 }
 
@@ -145,10 +176,12 @@ static int l_load_background(lua_State *L) {
     if (cached) {
         gGameState.background = *cached;
         TraceLog(LOG_INFO, "Loaded cached background: %s", file);
+        updateLRU(&backgroundLRU, path);
     } else {
         gGameState.background = LoadTexture(path);
         char *key = strdup(path);
         insert(&backgroundCache, key, gGameState.background);
+        insert(&backgroundLRU, first(&backgroundLRU), key);
         TraceLog(LOG_INFO, "Loaded new background: %s", file);
     }
     strncpy(gGameState.bgfile, path, PATH_BUFFER_SIZE);
@@ -165,7 +198,7 @@ static int l_load_sprite(lua_State *L) {
         id = lua_tostring(L, 4);
     Vector2 pos = { (float)x, (float)y };
 
-    if (gGameState.spriteCount >= MAX_SPRITES)
+    if (gGameState.spriteCount >= CACHE_SIZE)
         return -1;
 
     char path[PATH_BUFFER_SIZE];
@@ -175,10 +208,12 @@ static int l_load_sprite(lua_State *L) {
     if (cached) {
         gGameState.sprites[gGameState.spriteCount].texture = *cached;
         TraceLog(LOG_INFO, "Loaded cached sprite: %s", file);
+        updateLRU(&spriteLRU, path);
     } else {
         gGameState.sprites[gGameState.spriteCount].texture = LoadTexture(path);
         char *key = strdup(path);
         insert(&spriteCache, key, gGameState.sprites[gGameState.spriteCount].texture);
+        insert(&spriteLRU, first(&spriteLRU), key);
         TraceLog(LOG_INFO, "Loaded new sprite: %s", file);
     }
     gGameState.sprites[gGameState.spriteCount].pos = pos;
@@ -199,6 +234,7 @@ static int l_unload_sprite(lua_State *L) {
     for (int i = 0; i < gGameState.spriteCount; i++) {
         if (gGameState.sprites[i].hasID && strcmp(gGameState.sprites[i].id, id) == 0) {
             UnloadTexture(gGameState.sprites[i].texture);
+            if(!erase(&spriteCache, gGameState.spritefiles[i])) TraceLog(LOG_INFO, "Sprite was now in cache: %s", id); 
             for (int j = i; j < gGameState.spriteCount - 1; j++) {
                 strncpy(gGameState.spritefiles[j], gGameState.spritefiles[j + 1], PATH_BUFFER_SIZE);
                 gGameState.sprites[j] = gGameState.sprites[j + 1];
@@ -223,10 +259,12 @@ static int l_play_music(lua_State *L) {
     if (cached) {
         gGameState.music = *cached;
         TraceLog(LOG_INFO, "Loaded cached music: %s", file);
+        updateLRU(&musicLRU, path);
     } else {
         gGameState.music = LoadMusicStream(path);
         char *key = strdup(path);
         insert(&musicCache, key, gGameState.music);
+        insert(&musicLRU, first(&musicLRU), key);
         TraceLog(LOG_INFO, "Loaded new music: %s", file);
     }
     PlayMusicStream(gGameState.music);
@@ -297,7 +335,7 @@ static int l_show_text(lua_State *L) {
         gGameState.textColor = WHITE;
     }
 
-    if (lua_gettop(L) >= 5 && lua_isnumber(L, 4) && lua_isnumber(L, 4)) {
+    if (lua_gettop(L) >= 5 && lua_isnumber(L, 4) && lua_isnumber(L, 5)) {
         gGameState.dialogPos.x = (float)lua_tointeger(L, 4);
         gGameState.dialogPos.y = (float)lua_tointeger(L, 5);
         gGameState.dialogHasPos = true;
@@ -354,6 +392,7 @@ static int l_pop_state(lua_State *L) {
     }
     GameState *state = get(&gameStateStack, size(&gameStateStack) - 1);
     gGameState = *state;
+    gSceneThread = gGameState.sceneThread;  // restore the coroutine (and its call stack)
     erase(&gameStateStack, size(&gameStateStack) - 1);
     lua_pushboolean(L, true);
     return 1;
@@ -367,7 +406,6 @@ typedef struct{;
     int buttonHeight; // if 0, computed as font + 2*padding
     bool center;      // if true, center horizontally on screen; if false, use baseRect.x and baseRect.width
     Rectangle baseRect; // used for starting y (and x when not centered)
-    // Removed useFade – raygui handles styling internally
 } OptionsStyle;
 
 void genericChoose(void* data, int count, const char* (*getLabel)(int, void*), void (*onSelect)(int, void*), OptionsStyle style) {
@@ -529,7 +567,7 @@ const float defaultXRel = 60.0f / (float)screenWidth;
 const float defaultYRel = 330.0f / (float)screenHeight;
 const float defaultWidthRel = 685.0f / (float)screenWidth;
 const float defaultHeightRel = 100.0f / (float)screenHeight;
-
+bool forward = false;
 void updateText() {
     Rectangle textBox;
     if (gGameState.dialogHasPos) {
@@ -549,6 +587,16 @@ void updateText() {
     if (gGameState.dialogName[0])
         DrawText(gGameState.dialogName, textBox.x + 5, textBox.y - 25, 20, gGameState.dialogNameColor);
     DrawTextBoxed(GetFontDefault(), gGameState.dialogText, innerBox, 20, 2, true, gGameState.textColor);
+
+    int btnWidth = 60, btnHeight = 30;
+    Rectangle backBut = { textBox.width + textBox.x - 2*10 - 2*btnWidth, textBox.y + textBox.height - btnHeight - 10, btnWidth, btnHeight };
+    if (GuiButton(backBut, "#118#")) {
+        l_pop_state(gL);
+    }
+    Rectangle forwardBut = { textBox.width + textBox.x - 10 - btnWidth, textBox.y + textBox.height - btnHeight - 10, btnWidth, btnHeight };
+    if (GuiButton(forwardBut, "#119#")) {
+        forward = true;
+    }
 }
 
 void cachePrefetched(const char *funcName, const char *path) {
@@ -579,7 +627,7 @@ void cachePrefetched(const char *funcName, const char *path) {
     }
 }
 
-// TODO: Investigate stack prefetching
+// TODO: Investigate stack prefetching as it doesn't seem to correctly cache things
 void prefetchAssets(lua_State *L) {
     lua_Debug ar;
     int level = 0;
@@ -597,6 +645,36 @@ void prefetchAssets(lua_State *L) {
             }
         }
         level++;
+    }
+}
+
+void invAssets(void) {
+    while (size(&backgroundLRU) > CACHE_SIZE) {
+        char *key = (char *)last(&backgroundLRU);
+        Texture2D *tex = get(&backgroundCache, key);
+        if (tex) UnloadTexture(*tex);
+        erase(&backgroundCache, key);
+        erase(&backgroundLRU, last(&backgroundLRU));
+        TraceLog(LOG_INFO, "Evicted background: %s", key);
+    }
+    while (size(&musicLRU) > CACHE_SIZE) {
+        char *key = (char *)last(&musicLRU);
+        Music *mus = get(&musicCache, key);
+        if (mus) {
+            StopMusicStream(*mus);
+            UnloadMusicStream(*mus);
+        }
+        erase(&musicCache, key);
+        erase(&musicLRU, last(&musicLRU));
+        TraceLog(LOG_INFO, "Evicted music: %s", key);
+    }
+    while (size(&spriteLRU) > CACHE_SIZE) {
+        char *key = (char *)last(&spriteLRU);
+        Texture2D *tex = get(&spriteCache, key);
+        if (tex) UnloadTexture(*tex);
+        erase(&spriteCache, key);
+        erase(&spriteLRU, last(&spriteLRU));
+        TraceLog(LOG_INFO, "Evicted sprite: %s", key);
     }
 }
 
@@ -625,6 +703,9 @@ int main(void) {
     init(&musicCache);
     init(&spriteCache);
     init(&gameStateStack);
+    init(&backgroundLRU);
+    init(&musicLRU);
+    init(&spriteLRU);
 
     SetTargetFPS(60);
     while (!gQuit) {
@@ -653,7 +734,8 @@ int main(void) {
     
             if (gGameState.hasDialog && gGameState.choiceCount == 0) {
                 if (lua_status(gSceneThread) == LUA_YIELD &&
-                    (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) || IsKeyPressed(KEY_SPACE))) {
+                    ( forward || IsKeyPressed(KEY_SPACE))) {
+                    forward = false;
                     int nres = 0;
                     int status = lua_resume(gSceneThread, gL, 0, &nres);
                     if (status == LUA_YIELD) {
@@ -679,6 +761,7 @@ int main(void) {
             } break;
             default: break;
         } 
+        invAssets();
         EndDrawing();
     }
 
