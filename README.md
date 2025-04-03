@@ -15,6 +15,7 @@ void clear_text() // Clears the current text.
 void set_choices(table choice) // Creates a list of buttons which move you to a new scene.
 void quit() // Exit program.
 void module_init(string folder) // Sets a prefix folder to access scenes from.
+void pop_state() // pop off the gamestate stack to rollback to a previous state
 ```
 
 And the following global variables:

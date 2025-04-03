@@ -1,7 +1,12 @@
+#include <stddef.h>
 #include <stdio.h>
 #include <stdbool.h>
 #include <string.h>
+#include <strings.h>
 #include "raylib.h"
+#define RAYGUI_IMPLEMENTATION
+#include "../external/raygui.h"
+#include "../external/cc.h"
 #include "boundedtext.h"
 #include "../build/lua/lua.h"
 #include "../build/lua/lualib.h"
@@ -28,34 +33,78 @@ typedef struct {
 
 /* Global state */
 static bool gQuit = false;
-static Texture2D gBackground;
-static bool gHasBackground = false;
 
-static Sprite gSprites[MAX_SPRITES];
-static int gSpriteCount = 0;
+map(char *, Texture2D) backgroundCache;
+map(char *, Music)       musicCache;
+map(char *, Texture2D)   spriteCache; // We'll cache sprite textures here
 
-static Music gMusic;
-static bool gHasMusic = false;
+typedef struct {
+    Texture2D background;
+    Music music;
+    Sprite sprites[MAX_SPRITES];
+    int spriteCount;
+    bool hasMusic;
+    bool isPaused;
+    bool hasBackground;
+    char dialogText[BUFFER_SIZE];
+    char dialogName[BUFFER_SIZE];
+    Color textColor;
+    Color dialogNameColor;
+    bool hasDialog;
+    Vector2 dialogPos;
+    bool dialogHasPos;
+    Choice choices[MAX_CHOICES];
+    int choiceCount;
+    const char* moduleFolder;
+    char bgfile[PATH_BUFFER_SIZE];
+    char musicfile[PATH_BUFFER_SIZE];
+    char spritefiles[MAX_SPRITES][PATH_BUFFER_SIZE];
+} GameState;
 
-static char gDialogText[BUFFER_SIZE] = "";
-static char gDialogName[BUFFER_SIZE] = "";
-static Color gTextColor = WHITE;
-static Color gDialogNameColor = WHITE;
-static bool gHasDialog = false;
-static Vector2 gDialogPos;
-static bool gDialogHasPos = false;
+static GameState gGameState = {
+    .spriteCount = 0,
+    .hasMusic = false,
+    .isPaused = false,
+    .hasBackground = false,
+    .dialogText = "",
+    .dialogName = "",
+    .textColor = WHITE,
+    .dialogNameColor = WHITE,
+    .hasDialog = false,
+    .dialogHasPos = false,
+    .choiceCount = 0,
+    .moduleFolder = "",
+    .bgfile = "",
+    .musicfile = "",
+    .spritefiles = ""
+};
 
-static Choice gChoices[MAX_CHOICES];
-static int gChoiceCount = 0;
-
-static const char* gModuleFolder = "";
-
+vec(GameState) gameStateStack;
 static lua_State *gL = NULL;
 static lua_State *gSceneThread = NULL;
+
+enum {
+    MODULE,
+    SAVE,
+    LOAD,
+    SETTINGS,
+    MAIN,
+    QUIT,
+    NONE,
+} menu = NONE;
+
+enum {
+    TITLE,
+    GAME,
+} screen = TITLE;
 
 /* Exposed Variables */
 static char gCurrentScene[BUFFER_SIZE] = "";
 static char gLastScene[BUFFER_SIZE] = "";
+
+void pushGameState(void) {
+    push(&gameStateStack, gGameState);
+}
 
 static void LoadScene(const char *sceneFile) {
     strncpy(gLastScene, gCurrentScene, BUFFER_SIZE - 1);
@@ -66,7 +115,7 @@ static void LoadScene(const char *sceneFile) {
     lua_setglobal(gL, "last_scene");
 
     char path[PATH_BUFFER_SIZE];
-    snprintf(path, PATH_BUFFER_SIZE, "mods/%s/%s", gModuleFolder, sceneFile);
+    snprintf(path, PATH_BUFFER_SIZE, "mods/%s/%s", gGameState.moduleFolder, sceneFile);
     gSceneThread = lua_newthread(gL);
     if (luaL_loadfile(gSceneThread, path) != LUA_OK) {
         const char *error = lua_tostring(gSceneThread, -1);
@@ -83,18 +132,27 @@ static void LoadScene(const char *sceneFile) {
 
 /* Lua API */
 static int l_module_init(lua_State *L) {
-    gModuleFolder = luaL_checkstring(L, 1);
+    gGameState.moduleFolder = luaL_checkstring(L, 1);
     return 0;
 }
 
 static int l_load_background(lua_State *L) {
     const char *file = luaL_checkstring(L, 1);
     char path[PATH_BUFFER_SIZE];
-    snprintf(path, PATH_BUFFER_SIZE, "mods/%s/images/%s", gModuleFolder, file);
-    if (gHasBackground) UnloadTexture(gBackground);
-    gBackground = LoadTexture(path);
-    gHasBackground = true;
-    TraceLog(LOG_INFO, "Loaded background: %s", file);
+    snprintf(path, PATH_BUFFER_SIZE, "mods/%s/images/%s", gGameState.moduleFolder, file);
+
+    Texture2D *cached = get(&backgroundCache, path);
+    if (cached) {
+        gGameState.background = *cached;
+        TraceLog(LOG_INFO, "Loaded cached background: %s", file);
+    } else {
+        gGameState.background = LoadTexture(path);
+        char *key = strdup(path);
+        insert(&backgroundCache, key, gGameState.background);
+        TraceLog(LOG_INFO, "Loaded new background: %s", file);
+    }
+    strncpy(gGameState.bgfile, path, PATH_BUFFER_SIZE);
+    gGameState.hasBackground = true;
     return 0;
 }
 
@@ -107,32 +165,45 @@ static int l_load_sprite(lua_State *L) {
         id = lua_tostring(L, 4);
     Vector2 pos = { (float)x, (float)y };
 
-    if (gSpriteCount >= MAX_SPRITES) return -1;
+    if (gGameState.spriteCount >= MAX_SPRITES)
+        return -1;
+
     char path[PATH_BUFFER_SIZE];
-    snprintf(path, PATH_BUFFER_SIZE, "mods/%s/images/%s", gModuleFolder, file);
-    Texture2D tex = LoadTexture(path);
-    gSprites[gSpriteCount].texture = tex;
-    gSprites[gSpriteCount].pos = pos;
-    if (id) {
-        strncpy(gSprites[gSpriteCount].id, id, BUFFER_SIZE - 1);
-        gSprites[gSpriteCount].id[BUFFER_SIZE - 1] = '\0';
-        gSprites[gSpriteCount].hasID = true;
+    snprintf(path, PATH_BUFFER_SIZE, "mods/%s/images/%s", gGameState.moduleFolder, file);
+
+    Texture2D *cached = get(&spriteCache, path);
+    if (cached) {
+        gGameState.sprites[gGameState.spriteCount].texture = *cached;
+        TraceLog(LOG_INFO, "Loaded cached sprite: %s", file);
     } else {
-        gSprites[gSpriteCount].hasID = false;
+        gGameState.sprites[gGameState.spriteCount].texture = LoadTexture(path);
+        char *key = strdup(path);
+        insert(&spriteCache, key, gGameState.sprites[gGameState.spriteCount].texture);
+        TraceLog(LOG_INFO, "Loaded new sprite: %s", file);
     }
-    gSpriteCount++;
-    TraceLog(LOG_INFO, "Loaded sprite: %s at (%d, %d) id: %s", file, x, y, id ? id : "none");
+    gGameState.sprites[gGameState.spriteCount].pos = pos;
+    if (id) {
+        strncpy(gGameState.sprites[gGameState.spriteCount].id, id, BUFFER_SIZE - 1);
+        gGameState.sprites[gGameState.spriteCount].id[BUFFER_SIZE - 1] = '\0';
+        gGameState.sprites[gGameState.spriteCount].hasID = true;
+    } else {
+        gGameState.sprites[gGameState.spriteCount].hasID = false;
+    }
+    strncpy(gGameState.spritefiles[gGameState.spriteCount], path, PATH_BUFFER_SIZE);
+    gGameState.spriteCount++;
     return 0;
 }
 
 static int l_unload_sprite(lua_State *L) {
     const char *id = luaL_checkstring(L, 1);
-    for (int i = 0; i < gSpriteCount; i++) {
-        if (gSprites[i].hasID && strcmp(gSprites[i].id, id) == 0) {
-            UnloadTexture(gSprites[i].texture);
-            for (int j = i; j < gSpriteCount - 1; j++)
-                gSprites[j] = gSprites[j + 1];
-            gSpriteCount--;
+    for (int i = 0; i < gGameState.spriteCount; i++) {
+        if (gGameState.sprites[i].hasID && strcmp(gGameState.sprites[i].id, id) == 0) {
+            UnloadTexture(gGameState.sprites[i].texture);
+            for (int j = i; j < gGameState.spriteCount - 1; j++) {
+                strncpy(gGameState.spritefiles[j], gGameState.spritefiles[j + 1], PATH_BUFFER_SIZE);
+                gGameState.sprites[j] = gGameState.sprites[j + 1];
+            }
+            gGameState.spriteCount--;
             TraceLog(LOG_INFO, "Unloaded sprite with id: %s", id);
             break;
         }
@@ -146,24 +217,30 @@ static int l_play_music(lua_State *L) {
     if (lua_gettop(L) >= 2 && lua_isnumber(L, 2))
         start = lua_tonumber(L, 2);
     char path[PATH_BUFFER_SIZE];
-    snprintf(path, PATH_BUFFER_SIZE, "mods/%s/music/%s", gModuleFolder, file);
-    if (gHasMusic) {
-        StopMusicStream(gMusic);
-        UnloadMusicStream(gMusic);
+    snprintf(path, PATH_BUFFER_SIZE, "mods/%s/music/%s", gGameState.moduleFolder, file);
+
+    Music *cached = get(&musicCache, path);
+    if (cached) {
+        gGameState.music = *cached;
+        TraceLog(LOG_INFO, "Loaded cached music: %s", file);
+    } else {
+        gGameState.music = LoadMusicStream(path);
+        char *key = strdup(path);
+        insert(&musicCache, key, gGameState.music);
+        TraceLog(LOG_INFO, "Loaded new music: %s", file);
     }
-    gMusic = LoadMusicStream(path);
-    PlayMusicStream(gMusic);
+    PlayMusicStream(gGameState.music);
     if (start > 0.0f)
-        SeekMusicStream(gMusic, start);
-    gHasMusic = true;
-    TraceLog(LOG_INFO, "Playing music: %s from %.2f sec", file, start);
+        SeekMusicStream(gGameState.music, start);
+    strncpy(gGameState.musicfile, path, PATH_BUFFER_SIZE);
+    gGameState.hasMusic = true;
     return 0;
 }
 
 static int l_play_sound(lua_State *L) {
     const char *file = luaL_checkstring(L, 1);
     char path[PATH_BUFFER_SIZE];
-    snprintf(path, PATH_BUFFER_SIZE, "mods/%s/music/%s", gModuleFolder, file);
+    snprintf(path, PATH_BUFFER_SIZE, "mods/%s/music/%s", gGameState.moduleFolder, file);
     Sound s = LoadSound(path);
     PlaySound(s);
     TraceLog(LOG_INFO, "Played sound: %s", file);
@@ -174,8 +251,8 @@ static int l_show_text(lua_State *L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     lua_getfield(L, 1, "name");
     const char *char_name = luaL_checkstring(L, -1);
-    strncpy(gDialogName, char_name, BUFFER_SIZE - 1);
-    gDialogName[BUFFER_SIZE - 1] = '\0';
+    strncpy(gGameState.dialogName, char_name, BUFFER_SIZE - 1);
+    gGameState.dialogName[BUFFER_SIZE - 1] = '\0';
     lua_pop(L, 1);
 
     lua_getfield(L, 1, "color");
@@ -192,15 +269,15 @@ static int l_show_text(lua_State *L) {
         lua_getfield(L, -1, "a");
         int a = luaL_optinteger(L, -1, 255);
         lua_pop(L, 1);
-        gDialogNameColor = (Color){ r, g, b, a };
+        gGameState.dialogNameColor = (Color){ r, g, b, a };
     } else {
-        gDialogNameColor = WHITE;
+        gGameState.dialogNameColor = WHITE;
     }
     lua_pop(L, 1);
 
     const char *text = luaL_checkstring(L, 2);
-    strncpy(gDialogText, text, BUFFER_SIZE - 1);
-    gDialogText[BUFFER_SIZE - 1] = '\0';
+    strncpy(gGameState.dialogText, text, BUFFER_SIZE - 1);
+    gGameState.dialogText[BUFFER_SIZE - 1] = '\0';
 
     if (lua_gettop(L) >= 3 && lua_istable(L, 3)) {
         lua_getfield(L, 3, "r");
@@ -215,72 +292,315 @@ static int l_show_text(lua_State *L) {
         lua_getfield(L, 3, "a");
         int ta = luaL_optinteger(L, -1, 255);
         lua_pop(L, 1);
-        gTextColor = (Color){ tr, tg, tb, ta };
+        gGameState.textColor = (Color){ tr, tg, tb, ta };
     } else {
-        gTextColor = WHITE;
+        gGameState.textColor = WHITE;
     }
 
     if (lua_gettop(L) >= 5 && lua_isnumber(L, 4) && lua_isnumber(L, 4)) {
-        gDialogPos.x = (float)lua_tointeger(L, 4);
-        gDialogPos.y = (float)lua_tointeger(L, 5);
-        gDialogHasPos = true;
+        gGameState.dialogPos.x = (float)lua_tointeger(L, 4);
+        gGameState.dialogPos.y = (float)lua_tointeger(L, 5);
+        gGameState.dialogHasPos = true;
     } else {
-        gDialogHasPos = false;
+        gGameState.dialogHasPos = false;
     }
 
-    gHasDialog = true;
-    TraceLog(LOG_INFO, "Show text: %s", gDialogText);
+    gGameState.hasDialog = true;
+    TraceLog(LOG_INFO, "Show text: %s", gGameState.dialogText);
     return lua_yield(L, 0);
 }
 
 static int l_clear_text(lua_State *L) {
     (void)L;
-    gDialogText[0] = '\0';
-    gDialogName[0] = '\0';
-    gHasDialog = false;
-    gDialogHasPos = false;
+    gGameState.dialogText[0] = '\0';
+    gGameState.dialogName[0] = '\0';
+    gGameState.hasDialog = false;
+    gGameState.dialogHasPos = false;
     return 0;
 }
 
 static int l_set_choices(lua_State *L) {
     if (!lua_istable(L, 1)) return 0;
-    gChoiceCount = 0;
+    gGameState.choiceCount = 0;
     lua_pushnil(L);
-    while (lua_next(L, 1) && gChoiceCount < MAX_CHOICES) {
+    while (lua_next(L, 1) && gGameState.choiceCount < MAX_CHOICES) {
         if (lua_istable(L, -1)) {
             lua_getfield(L, -1, "text");
             lua_getfield(L, -2, "scene");
             const char *text = luaL_checkstring(L, -2);
             const char *scene = luaL_checkstring(L, -1);
-            strncpy(gChoices[gChoiceCount].text, text, BUFFER_SIZE - 1);
-            gChoices[gChoiceCount].text[BUFFER_SIZE - 1] = '\0';
-            strncpy(gChoices[gChoiceCount].scene, scene, BUFFER_SIZE - 1);
-            gChoices[gChoiceCount].scene[BUFFER_SIZE - 1] = '\0';
-            gChoiceCount++;
+            strncpy(gGameState.choices[gGameState.choiceCount].text, text, BUFFER_SIZE - 1);
+            gGameState.choices[gGameState.choiceCount].text[BUFFER_SIZE - 1] = '\0';
+            strncpy(gGameState.choices[gGameState.choiceCount].scene, scene, BUFFER_SIZE - 1);
+            gGameState.choices[gGameState.choiceCount].scene[BUFFER_SIZE - 1] = '\0';
+            gGameState.choiceCount++;
             lua_pop(L, 2);
         }
         lua_pop(L, 1);
     }
     return lua_yield(L, 0);
 }
+
 static int l_quit(lua_State *L) {
     (void)L;
     gQuit = true;
     return 0;
 }
 
-int main(void) {
-    enum {
-        TITLE,
-        GAME,
-    } screen = TITLE;
-    const int screenWidth = 800, screenHeight = 450;
-    // Proportions for text box
-    const float defaultXRel = 60.0f / (float)screenWidth;
-    const float defaultYRel = 330.0f / (float)screenHeight;
-    const float defaultWidthRel = 685.0f / (float)screenWidth;
-    const float defaultHeightRel = 100.0f / (float)screenHeight;
+static int l_pop_state(lua_State *L) {
+    if (size(&gameStateStack) == 0) {
+        lua_pushboolean(L, false);
+        return 1;
+    }
+    GameState *state = get(&gameStateStack, size(&gameStateStack) - 1);
+    gGameState = *state;
+    erase(&gameStateStack, size(&gameStateStack) - 1);
+    lua_pushboolean(L, true);
+    return 1;
+}
+/* End Lua API */
 
+typedef struct{;
+    int font;
+    int padding;
+    int spacing;
+    int buttonHeight; // if 0, computed as font + 2*padding
+    bool center;      // if true, center horizontally on screen; if false, use baseRect.x and baseRect.width
+    Rectangle baseRect; // used for starting y (and x when not centered)
+    // Removed useFade – raygui handles styling internally
+} OptionsStyle;
+
+void genericChoose(void* data, int count, const char* (*getLabel)(int, void*), void (*onSelect)(int, void*), OptionsStyle style) {
+    int btnHeight = (style.buttonHeight != 0) ? style.buttonHeight : style.font + 2 * style.padding;
+    int textWidth = 0;
+    int maxWidth = 0;
+    for (int i = 0; i < count; i++) {
+        textWidth = MeasureText(getLabel(i, data), style.font);
+        maxWidth = maxWidth < textWidth ? textWidth : maxWidth;
+    }
+    int btnWidth = textWidth + 2 * style.padding;
+    int btnX = style.center ? (GetScreenWidth() - btnWidth) / 2 : style.baseRect.x + (style.baseRect.width - btnWidth) / 2;
+    for (int i = 0; i < count; i++) {
+        int btnY = style.baseRect.y + i * (btnHeight + style.spacing);
+        Rectangle btnRect = { (float)btnX, (float)btnY, (float)btnWidth, (float)btnHeight };
+
+        if (GuiButton(btnRect, getLabel(i, data)))
+            onSelect(i, data);
+    }
+}
+
+const char* getModuleLabel(int index, void* data) {
+    FilePathList* scenes = (FilePathList*)data;
+    return GetFileName(scenes->paths[index]);
+}
+
+void onModuleSelect(int index, void* data) {
+    FilePathList* scenes = (FilePathList*)data;
+    const char* fileName = GetFileName(scenes->paths[index]);
+    LoadScene(fileName);
+    screen = GAME;
+    menu = NONE;
+    UnloadDirectoryFiles(*scenes);
+}
+
+void chooseModule(FilePathList* scenes) {
+    OptionsStyle style = {
+        .font = 20,
+        .padding = 5,
+        .spacing = 10,
+        .buttonHeight = 0,  // computed as font + 2*padding
+        .center = false,
+        .baseRect = { (float)GetScreenWidth()/2 - 200, (float)GetScreenHeight()/2 - 100, 400, 250 },
+    };
+    genericChoose((void*)scenes, scenes->count, getModuleLabel, onModuleSelect, style);
+}
+
+static inline const char* getSceneLabel(int index, void* data) {
+    Choice* choices = (Choice*)data;
+    return choices[index].text;
+}
+
+static inline void onSceneSelect(int index, void* data) {
+    Choice* choices = (Choice*)data;
+    gGameState.choiceCount = 0;
+    LoadScene(choices[index].scene);
+}
+
+void chooseScene() {
+    OptionsStyle style = {
+        .font = 20,
+        .padding = 5,
+        .spacing = 10,
+        .buttonHeight = 0,
+        .center = true,
+        .baseRect = { (float)GetScreenWidth()/2 - 200, (float)GetScreenHeight()/2 - 100, 400, 250 },
+    };
+    genericChoose((void*)gGameState.choices, gGameState.choiceCount, getSceneLabel, onSceneSelect, style);
+}
+
+static inline const char* getMenuItems(int index, void* data) {
+    char** choices = (char**)data;
+    return choices[index];
+}
+
+static inline void menuSelect(int index, void* data) {
+    (void)data;    
+    switch (index) {
+        case 0: {
+            menu = MODULE;
+        } break;
+        case 1: {
+            menu = SETTINGS;
+        } break;
+        case 2: {
+            menu = LOAD;
+        } break;
+        case 3: {
+            gQuit = true;
+        } break;
+        default: break;
+    }
+}
+
+void mainMenu() {
+    char* choices[] = { "Select Module", "Load Game", "Settings", "Quit" };
+    int count = 4;
+    OptionsStyle style = {
+        .font = 40,
+        .padding = 5,
+        .spacing = 10,
+        .buttonHeight = 30,  // computed as font + 2*padding
+        .center = false,
+        .baseRect = { (float)GetScreenWidth()/2 - 200, (float)GetScreenHeight()/2 - 100, 400, 250 },
+    };
+    genericChoose((void*)choices, count, getMenuItems, menuSelect, style);
+}
+
+void updateBackground(Shader* spriteOutline) {
+    Texture2D bgTex = gGameState.background;
+    int windowWidth = GetScreenWidth(), windowHeight = GetScreenHeight();
+    float scale_bg = (float)windowHeight / bgTex.height;
+    float desired_tex_width = (float)windowWidth / scale_bg;
+    float crop_x = (bgTex.width - desired_tex_width) / 2.0f;
+    Rectangle srcRect = { crop_x, 0, desired_tex_width, (float)bgTex.height };
+    Rectangle dstRect = { 0, 0, (float)windowWidth, (float)windowHeight };
+    DrawTexturePro(bgTex, srcRect, dstRect, (Vector2){0,0}, 0.0f, WHITE);
+
+    if (gGameState.spriteCount > 0) {
+        float outlineSize = 8.0f;
+        float outlineColor[4] = { 0.2f, 0.2f, 0.2f, 0.2f };
+
+        for (int i = 0; i < gGameState.spriteCount; i++) {
+            Texture2D sprTex = gGameState.sprites[i].texture;
+            float drawn_x = (gGameState.sprites[i].pos.x - crop_x) * scale_bg;
+            float drawn_y = gGameState.sprites[i].pos.y * scale_bg;
+            float sprite_scale = (4.0/3.0 * windowHeight) / (float)sprTex.height;
+            Rectangle sprSrc = { 0, 0, (float)sprTex.width, (float)sprTex.height };
+            Rectangle sprDst = { drawn_x, drawn_y, sprTex.width * sprite_scale, sprTex.height * sprite_scale };
+
+            float textureSize[2] = { (float)sprTex.width, (float)sprTex.height };
+            int outlineSizeLoc = GetShaderLocation(*spriteOutline, "outlineSize");
+            int outlineColorLoc = GetShaderLocation(*spriteOutline, "outlineColor");
+            int textureSizeLoc = GetShaderLocation(*spriteOutline, "textureSize");
+            SetShaderValue(*spriteOutline, outlineSizeLoc, &outlineSize, SHADER_UNIFORM_FLOAT);
+            SetShaderValue(*spriteOutline, outlineColorLoc, outlineColor, SHADER_UNIFORM_VEC4);
+            SetShaderValue(*spriteOutline, textureSizeLoc, textureSize, SHADER_UNIFORM_VEC2);
+
+            BeginShaderMode(*spriteOutline);
+            DrawTexturePro(sprTex, sprSrc, sprDst, (Vector2){0, 0}, 0.0f, WHITE);
+            EndShaderMode();
+        }
+    }
+}
+
+void pauseMenu() {
+    switch (menu) {
+        case SAVE: {} break;
+        case LOAD: {} break;
+        case SETTINGS: {} break;
+        case QUIT: {} break;
+        default: break;
+    }
+}
+
+const int screenWidth = 800, screenHeight = 450;
+// Proportions for text box
+const float defaultXRel = 60.0f / (float)screenWidth;
+const float defaultYRel = 330.0f / (float)screenHeight;
+const float defaultWidthRel = 685.0f / (float)screenWidth;
+const float defaultHeightRel = 100.0f / (float)screenHeight;
+
+void updateText() {
+    Rectangle textBox;
+    if (gGameState.dialogHasPos) {
+        textBox.x = gGameState.dialogPos.x + defaultXRel * GetScreenWidth();
+        textBox.y = gGameState.dialogPos.y + defaultYRel * GetScreenHeight();
+    } else {
+        textBox.x = defaultXRel * GetScreenWidth();
+        textBox.y = defaultYRel * GetScreenHeight();
+    }
+    textBox.width = defaultWidthRel * GetScreenWidth();
+    textBox.height = defaultHeightRel * GetScreenHeight();
+    int textPadding = 10;
+    Rectangle innerBox = { textBox.x + textPadding, textBox.y + textPadding,
+                           textBox.width - 2 * textPadding, textBox.height - 2 * textPadding };
+    DrawRectangleRec(textBox, Fade(BLACK, 0.5f));
+    
+    if (gGameState.dialogName[0])
+        DrawText(gGameState.dialogName, textBox.x + 5, textBox.y - 25, 20, gGameState.dialogNameColor);
+    DrawTextBoxed(GetFontDefault(), gGameState.dialogText, innerBox, 20, 2, true, gGameState.textColor);
+}
+
+void cachePrefetched(const char *funcName, const char *path) {
+    if (strcmp(funcName, "load_background") == 0) {
+        Texture2D *cached = get(&backgroundCache, path);
+        if (!cached) {
+            Texture2D tex = LoadTexture(path);
+            char *key = strdup(path);
+            insert(&backgroundCache, key, tex);
+            TraceLog(LOG_INFO, "Cached background: %s", path);
+        }
+    } else if (strcmp(funcName, "load_sprite") == 0) {
+        Texture2D *cached = get(&spriteCache, path);
+        if (!cached) {
+            Texture2D tex = LoadTexture(path);
+            char *key = strdup(path);
+            insert(&spriteCache, key, tex);
+            TraceLog(LOG_INFO, "Cached sprite: %s", path);
+        }
+    } else if (strcmp(funcName, "load_music") == 0) {
+        Music *cached = get(&musicCache, path);
+        if (!cached) {
+            Music music = LoadMusicStream(path);
+            char *key = strdup(path);
+            insert(&musicCache, key, music);
+            TraceLog(LOG_INFO, "Cached music: %s", path);
+        }
+    }
+}
+
+// TODO: Investigate stack prefetching
+void prefetchAssets(lua_State *L) {
+    lua_Debug ar;
+    int level = 0;
+    while (lua_getstack(L, level, &ar)) {
+        lua_getinfo(L, "nSl", &ar);
+        if (ar.name &&
+            (strcmp(ar.name, "load_background") == 0 ||
+             strcmp(ar.name, "load_sprite") == 0 ||
+             strcmp(ar.name, "load_music") == 0)) {
+            // Assume the first local variable is the asset file path.
+            const char *assetPath = lua_getlocal(L, &ar, 1);
+            if (assetPath) {
+                cachePrefetched(ar.name, assetPath);
+                lua_pop(L, 1); // pop the local
+            }
+        }
+        level++;
+    }
+}
+
+int main(void) {
     InitWindow(screenWidth, screenHeight, "VN Engine");
     InitAudioDevice();
     Shader spriteOutline = LoadShader(0, TextFormat("src/outline-%i.fs", GLSL_VERSION));
@@ -298,8 +618,13 @@ int main(void) {
     lua_register(gL, "set_choices", l_set_choices);
     lua_register(gL, "quit", l_quit);
     lua_register(gL, "module_init", l_module_init);
+    lua_register(gL, "pop_state", l_pop_state);
 
     FilePathList scenes = LoadDirectoryFilesEx("mods", ".lua", 0);
+    init(&backgroundCache);
+    init(&musicCache);
+    init(&spriteCache);
+    init(&gameStateStack);
 
     SetTargetFPS(60);
     while (!gQuit) {
@@ -308,36 +633,33 @@ int main(void) {
         ClearBackground(RAYWHITE);
         switch (screen) {
         case TITLE: {
-            Vector2 mousePoint = GetMousePosition();
-            int fontSize = 20;
-            int padding = 10;
-            Rectangle dialog = { (float)GetScreenWidth()/2 - 200, (float)GetScreenHeight()/2 - 150, 400, 300 };
-            for (uint i = 0; i < scenes.count; i++) {
-                const char* fileName = GetFileName(scenes.paths[i]);
-                int textWidth = MeasureText(fileName, fontSize);
-                int textHeight = fontSize;
-                float optX = dialog.x + (dialog.width - (textWidth + 2 * padding)) / 2.0f;
-                float optY = dialog.y + 50 + i * (textHeight + 2 * padding + 10);
-                Rectangle optRect = { optX, optY, textWidth + 2 * padding, textHeight + 2 * padding };
-                DrawRectangleRec(optRect, Fade(LIGHTGRAY, 0.8f));
-                DrawRectangleLinesEx(optRect, 2, WHITE);
-                DrawText(fileName, optRect.x + padding, optRect.y + padding, fontSize, BLACK);
-                if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) && CheckCollisionPointRec(mousePoint, optRect)) {
-                    LoadScene(GetFileName(scenes.paths[i]));
-                    screen = GAME;
-                    UnloadDirectoryFiles(scenes);
-                }
-            }
-            break;
-        }
+            switch (menu) {
+                case NONE: {
+                    mainMenu();
+                } break;
+                case MODULE: {
+                    chooseModule(&scenes);
+                } break;
+                case LOAD: {} break;
+                case SETTINGS: {} break;
+                case QUIT: {
+                    gQuit = true;
+                } break;
+            } break;
+        } break;
         case GAME: {
-            if (gHasMusic) UpdateMusicStream(gMusic);
+            if (gGameState.isPaused) pauseMenu();
+            if (gGameState.hasMusic) UpdateMusicStream(gGameState.music);
     
-            if (gHasDialog && gChoiceCount == 0) {
+            if (gGameState.hasDialog && gGameState.choiceCount == 0) {
                 if (lua_status(gSceneThread) == LUA_YIELD &&
                     (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) || IsKeyPressed(KEY_SPACE))) {
                     int nres = 0;
                     int status = lua_resume(gSceneThread, gL, 0, &nres);
+                    if (status == LUA_YIELD) {
+                        pushGameState();
+                        prefetchAssets(gSceneThread);
+                    }
                     if (status != LUA_YIELD && status != LUA_OK) {
                         const char *error = lua_tostring(gSceneThread, -1);
                         fprintf(stderr, "Error resuming scene: %s\n", error);
@@ -345,95 +667,27 @@ int main(void) {
                 }
             }
     
-            if (gHasBackground) {
-                Texture2D bgTex = gBackground;
-                int windowWidth = GetScreenWidth(), windowHeight = GetScreenHeight();
-                float scale_bg = (float)windowHeight / bgTex.height;
-                float desired_tex_width = (float)windowWidth / scale_bg;
-                float crop_x = (bgTex.width - desired_tex_width) / 2.0f;
-                Rectangle srcRect = { crop_x, 0, desired_tex_width, (float)bgTex.height };
-                Rectangle dstRect = { 0, 0, (float)windowWidth, (float)windowHeight };
-                DrawTexturePro(bgTex, srcRect, dstRect, (Vector2){0,0}, 0.0f, WHITE);
-
-                if (gSpriteCount > 0) {
-                    float outlineSize = 8.0f;
-                    float outlineColor[4] = { 0.2f, 0.2f, 0.2f, 0.2f };
-
-                    for (int i = 0; i < gSpriteCount; i++) {
-                        Texture2D sprTex = gSprites[i].texture;
-                        float drawn_x = (gSprites[i].pos.x - crop_x) * scale_bg;
-                        float drawn_y = gSprites[i].pos.y * scale_bg;
-                        float sprite_scale = (4.0/3.0 * windowHeight) / (float)sprTex.height;
-                        Rectangle sprSrc = { 0, 0, (float)sprTex.width, (float)sprTex.height };
-                        Rectangle sprDst = { drawn_x, drawn_y, sprTex.width * sprite_scale, sprTex.height * sprite_scale };
-
-                        float textureSize[2] = { (float)sprTex.width, (float)sprTex.height };
-                        int outlineSizeLoc = GetShaderLocation(spriteOutline, "outlineSize");
-                        int outlineColorLoc = GetShaderLocation(spriteOutline, "outlineColor");
-                        int textureSizeLoc = GetShaderLocation(spriteOutline, "textureSize");
-                        SetShaderValue(spriteOutline, outlineSizeLoc, &outlineSize, SHADER_UNIFORM_FLOAT);
-                        SetShaderValue(spriteOutline, outlineColorLoc, outlineColor, SHADER_UNIFORM_VEC4);
-                        SetShaderValue(spriteOutline, textureSizeLoc, textureSize, SHADER_UNIFORM_VEC2);
-
-                        BeginShaderMode(spriteOutline);
-                        DrawTexturePro(sprTex, sprSrc, sprDst, (Vector2){0, 0}, 0.0f, WHITE);
-                        EndShaderMode();
-                    }
-                }
+            if (gGameState.hasBackground) {
+                updateBackground(&spriteOutline);
             }
-            if (gHasDialog) {
-                Rectangle textBox;
-                if (gDialogHasPos) {
-                    textBox.x = gDialogPos.x + defaultXRel * GetScreenWidth();
-                    textBox.y = gDialogPos.y + defaultYRel * GetScreenHeight();
-                } else {
-                    textBox.x = defaultXRel * GetScreenWidth();
-                    textBox.y = defaultYRel * GetScreenHeight();
-                }
-                textBox.width = defaultWidthRel * GetScreenWidth();
-                textBox.height = defaultHeightRel * GetScreenHeight();
-                int textPadding = 10;
-                Rectangle innerBox = { textBox.x + textPadding, textBox.y + textPadding,
-                                       textBox.width - 2 * textPadding, textBox.height - 2 * textPadding };
-                DrawRectangleRec(textBox, Fade(BLACK, 0.5f));
-                
-                if (gDialogName[0])
-                    DrawText(gDialogName, textBox.x + 5, textBox.y - 25, 20, gDialogNameColor);
-                DrawTextBoxed(GetFontDefault(), gDialogText, innerBox, 20, 2, true, gTextColor);
+            if (gGameState.hasDialog) {
+                updateText();
             }
-            if (gChoiceCount > 0) {
-                int choiceFont = 20;
-                int spacing = 20, buttonHeight = 40;
-                int startY = (GetScreenHeight() / 2) - (gChoiceCount * buttonHeight);
-                for (int i = 0; i < gChoiceCount; i++) {
-                    int textWidth = MeasureText(gChoices[i].text, choiceFont);
-                    int buttonWidth = textWidth + 20;
-                    int buttonX = (GetScreenWidth() - buttonWidth) / 2;
-                    int buttonY = startY + i * (buttonHeight + spacing);
-                    Rectangle buttonRect = { buttonX, buttonY, buttonWidth, buttonHeight };
-                    DrawRectangleRec(buttonRect, LIGHTGRAY);
-                    DrawRectangleLines(buttonX, buttonY, buttonWidth, buttonHeight, BLACK);
-                    DrawText(gChoices[i].text, buttonX + 10, buttonY + 10, choiceFont, BLACK);
-    
-                    if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) &&
-                        CheckCollisionPointRec(GetMousePosition(), buttonRect)) {
-                        gChoiceCount = 0;
-                        LoadScene(gChoices[i].scene);
-                    }
-                }
+            if (gGameState.choiceCount > 0) {
+                chooseScene();
             }
-            break;
-            } default: break;
+            } break;
+            default: break;
         } 
         EndDrawing();
     }
 
-    if (gHasBackground) UnloadTexture(gBackground);
-    for (int i = 0; i < gSpriteCount; i++)
-        UnloadTexture(gSprites[i].texture);
-    if (gHasMusic) {
-        StopMusicStream(gMusic);
-        UnloadMusicStream(gMusic);
+    if (gGameState.hasBackground) UnloadTexture(gGameState.background);
+    for (int i = 0; i < gGameState.spriteCount; i++)
+        UnloadTexture(gGameState.sprites[i].texture);
+    if (gGameState.hasMusic) {
+        StopMusicStream(gGameState.music);
+        UnloadMusicStream(gGameState.music);
     }
     lua_close(gL);
     CloseAudioDevice();

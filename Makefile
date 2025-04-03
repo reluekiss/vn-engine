@@ -3,9 +3,11 @@ PLATFORM ?= linux
 ifeq ($(PLATFORM), linux)
     CC = cc
     LIBS = -lraylib -lm
-    CFLAGS = -O3 -ggdb -Wall -Wextra -Wformat -Wformat=2 -Wimplicit-fallthrough -Werror=format-security -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -D_GLIBCXX_ASSERTIONS -fstrict-flex-arrays=3 -fstack-clash-protection -fstack-protector-strong
+    #CFLAGS = -O3 -ggdb -Wall -Wextra -Wformat -Wformat=2 -Wimplicit-fallthrough -Werror=format-security -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -D_GLIBCXX_ASSERTIONS -fstrict-flex-arrays=3 -fstack-clash-protection -fstack-protector-strong
+    CFLAGS = -O3 -ggdb
     CNOOB = -ffunction-sections -fdata-sections -flto
-    LDFLAGS = -Wl,--gc-sections -s -Wl,-z,nodlopen -Wl,-z,noexecstack -Wl,-z,relro -Wl,-z,now -Wl,--as-needed -Wl,--no-copy-dt-needed-entries
+    # LDFLAGS = -Wl,--gc-sections -s -Wl,-z,nodlopen -Wl,-z,noexecstack -Wl,-z,relro -Wl,-z,now -Wl,--as-needed -Wl,--no-copy-dt-needed-entries
+    LDFLAGS = 
     LUA_CFLAGS = -DLUA_USE_POSIX
 else ifeq ($(PLATFORM), darwin)
     CC = cc
