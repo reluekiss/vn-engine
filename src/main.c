@@ -112,10 +112,10 @@ enum {
 static char gCurrentScene[BUFFER_SIZE] = "";
 static char gLastScene[BUFFER_SIZE] = "";
 
-static void updateLRU(void *lruList, const char *key) {
-    for (char **iter = first(lruList); iter != end(lruList); iter = next(lruList, iter)) {
-        if (strcmp(*iter, key) == 0) {
-            erase(lruList, iter);
+static void updateLRU(list(char *) *lruList, const char *key) {
+    for_each(lruList, el) {
+        if (strcmp(*el, key) == 0) {
+            erase(lruList, el);
             break;
         }
     }
