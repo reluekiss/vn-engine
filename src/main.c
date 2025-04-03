@@ -53,8 +53,8 @@ typedef struct {
     Music music;
     Sprite sprites[CACHE_SIZE];
     int spriteCount;
-    bool hasMusic;
     bool isPaused;
+    bool hasMusic;
     bool hasBackground;
     char dialogText[BUFFER_SIZE];
     char dialogName[BUFFER_SIZE];
@@ -73,8 +73,8 @@ typedef struct {
 
 static GameState gGameState = {
     .spriteCount = 0,
-    .hasMusic = false,
     .isPaused = false,
+    .hasMusic = false,
     .hasBackground = false,
     .dialogText = "",
     .dialogName = "",
@@ -408,7 +408,7 @@ typedef struct{;
     Rectangle baseRect; // used for starting y (and x when not centered)
 } OptionsStyle;
 
-void genericChoose(void* data, int count, const char* (*getLabel)(int, void*), void (*onSelect)(int, void*), OptionsStyle style) {
+void genericChoose(void* data, int* shortcuts, int count, const char* (*getLabel)(int, void*), void (*onSelect)(int, void*), OptionsStyle style) {
     int btnHeight = (style.buttonHeight != 0) ? style.buttonHeight : style.font + 2 * style.padding;
     int textWidth = 0;
     int maxWidth = 0;
@@ -422,7 +422,7 @@ void genericChoose(void* data, int count, const char* (*getLabel)(int, void*), v
         int btnY = style.baseRect.y + i * (btnHeight + style.spacing);
         Rectangle btnRect = { (float)btnX, (float)btnY, (float)btnWidth, (float)btnHeight };
 
-        if (GuiButton(btnRect, getLabel(i, data)))
+        if (IsKeyPressed(shortcuts[i]) || GuiButton(btnRect, getLabel(i, data)))
             onSelect(i, data);
     }
 }
@@ -438,10 +438,10 @@ void onModuleSelect(int index, void* data) {
     LoadScene(fileName);
     screen = GAME;
     menu = NONE;
-    UnloadDirectoryFiles(*scenes);
 }
 
 void chooseModule(FilePathList* scenes) {
+    int shortCut[] = { KEY_ONE, KEY_TWO, KEY_THREE, KEY_FOUR, KEY_FIVE, KEY_SIX, KEY_SEVEN, KEY_EIGHT, KEY_NINE, KEY_ZERO };
     OptionsStyle style = {
         .font = 20,
         .padding = 5,
@@ -450,7 +450,7 @@ void chooseModule(FilePathList* scenes) {
         .center = false,
         .baseRect = { (float)GetScreenWidth()/2 - 200, (float)GetScreenHeight()/2 - 100, 400, 250 },
     };
-    genericChoose((void*)scenes, scenes->count, getModuleLabel, onModuleSelect, style);
+    genericChoose((void*)scenes, shortCut, scenes->count, getModuleLabel, onModuleSelect, style);
 }
 
 static inline const char* getSceneLabel(int index, void* data) {
@@ -465,6 +465,7 @@ static inline void onSceneSelect(int index, void* data) {
 }
 
 void chooseScene() {
+    int shortCut[] = { KEY_ONE, KEY_TWO, KEY_THREE, KEY_FOUR, KEY_FIVE, KEY_SIX, KEY_SEVEN, KEY_EIGHT, KEY_NINE, KEY_ZERO };
     OptionsStyle style = {
         .font = 20,
         .padding = 5,
@@ -473,7 +474,7 @@ void chooseScene() {
         .center = true,
         .baseRect = { (float)GetScreenWidth()/2 - 200, (float)GetScreenHeight()/2 - 100, 400, 250 },
     };
-    genericChoose((void*)gGameState.choices, gGameState.choiceCount, getSceneLabel, onSceneSelect, style);
+    genericChoose((void*)gGameState.choices, shortCut, gGameState.choiceCount, getSceneLabel, onSceneSelect, style);
 }
 
 static inline const char* getMenuItems(int index, void* data) {
@@ -501,6 +502,7 @@ static inline void menuSelect(int index, void* data) {
 }
 
 void mainMenu() {
+    int shortCut[] = { KEY_NULL, KEY_L, KEY_S, KEY_Q }; 
     char* choices[] = { "Select Module", "Load Game", "Settings", "Quit" };
     int count = 4;
     OptionsStyle style = {
@@ -511,7 +513,69 @@ void mainMenu() {
         .center = false,
         .baseRect = { (float)GetScreenWidth()/2 - 200, (float)GetScreenHeight()/2 - 100, 400, 250 },
     };
-    genericChoose((void*)choices, count, getMenuItems, menuSelect, style);
+    genericChoose((void*)choices, shortCut, count, getMenuItems, menuSelect, style);
+}
+
+static inline void pauseMenuSelect(int index, void* data) {
+    (void)data;    
+    switch (index) {
+        case 0: {
+            gGameState.isPaused = false;
+        } break;
+        case 1: {
+            menu = SAVE;
+        } break;
+        case 2: {
+            menu = LOAD;
+        } break;
+        case 3: {
+            menu = SETTINGS;
+            gGameState.isPaused = false;
+        } break;
+        case 4: {
+            if (gGameState.hasBackground) UnloadTexture(gGameState.background);
+            gGameState.hasBackground = false;
+            for (int i = 0; i < gGameState.spriteCount; i++)
+                UnloadTexture(gGameState.sprites[i].texture);
+            if (gGameState.hasMusic) {
+                StopMusicStream(gGameState.music);
+                UnloadMusicStream(gGameState.music);
+            }
+            cleanup(&backgroundCache);
+            cleanup(&musicCache);
+            cleanup(&spriteCache);
+            cleanup(&gameStateStack);
+            cleanup(&backgroundLRU);
+            cleanup(&musicLRU);
+            cleanup(&spriteLRU);
+
+            gGameState.hasDialog = false;
+            gGameState.moduleFolder = "";
+            gGameState.isPaused = false;
+            menu = NONE;
+            screen = TITLE;
+        } break;
+        case 5: {
+            gQuit = true;
+        } break;
+        default: break;
+    }
+}
+
+void pauseMenu() {
+    DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Fade(GRAY, 0.8f));
+    int shortCut[] = { KEY_R, KEY_G, KEY_L, KEY_S, KEY_M, KEY_Q }; 
+    char* choices[] = { "Resume", "Save Game", "Load Game", "Settings", "Main Menu", "Quit" };
+    int count = 6;
+    OptionsStyle style = {
+        .font = 40,
+        .padding = 5,
+        .spacing = 10,
+        .buttonHeight = 30,  // computed as font + 2*padding
+        .center = false,
+        .baseRect = { (float)GetScreenWidth()/2 - 200, (float)GetScreenHeight()/2 - 100, 400, 250 },
+    };
+    genericChoose((void*)choices, shortCut, count, getMenuItems, pauseMenuSelect, style);
 }
 
 void updateBackground(Shader* spriteOutline) {
@@ -551,16 +615,6 @@ void updateBackground(Shader* spriteOutline) {
     }
 }
 
-void pauseMenu() {
-    switch (menu) {
-        case SAVE: {} break;
-        case LOAD: {} break;
-        case SETTINGS: {} break;
-        case QUIT: {} break;
-        default: break;
-    }
-}
-
 const int screenWidth = 800, screenHeight = 450;
 // Proportions for text box
 const float defaultXRel = 60.0f / (float)screenWidth;
@@ -588,13 +642,13 @@ void updateText() {
         DrawText(gGameState.dialogName, textBox.x + 5, textBox.y - 25, 20, gGameState.dialogNameColor);
     DrawTextBoxed(GetFontDefault(), gGameState.dialogText, innerBox, 20, 2, true, gGameState.textColor);
 
-    int btnWidth = 60, btnHeight = 30;
+    int btnWidth = 40, btnHeight = 30;
     Rectangle backBut = { textBox.width + textBox.x - 2*10 - 2*btnWidth, textBox.y + textBox.height - btnHeight - 10, btnWidth, btnHeight };
-    if (GuiButton(backBut, "#118#")) {
+    if (GuiButton(backBut, "#130#")) {
         l_pop_state(gL);
     }
     Rectangle forwardBut = { textBox.width + textBox.x - 10 - btnWidth, textBox.y + textBox.height - btnHeight - 10, btnWidth, btnHeight };
-    if (GuiButton(forwardBut, "#119#")) {
+    if (GuiButton(forwardBut, "#131#")) {
         forward = true;
     }
 }
@@ -729,7 +783,6 @@ int main(void) {
             } break;
         } break;
         case GAME: {
-            if (gGameState.isPaused) pauseMenu();
             if (gGameState.hasMusic) UpdateMusicStream(gGameState.music);
     
             if (gGameState.hasDialog && gGameState.choiceCount == 0) {
@@ -758,6 +811,10 @@ int main(void) {
             if (gGameState.choiceCount > 0) {
                 chooseScene();
             }
+            int btnWidth = 40, btnHeight = 30;
+            Rectangle pauseBut = { screenWidth - btnWidth - 10, 10, btnWidth, btnHeight };
+            if (IsKeyPressed(KEY_P) || GuiButton(pauseBut, "#132#")) gGameState.isPaused = true;
+            if (gGameState.isPaused) pauseMenu();
             } break;
             default: break;
         } 
@@ -765,6 +822,7 @@ int main(void) {
         EndDrawing();
     }
 
+    UnloadDirectoryFiles(scenes);
     if (gGameState.hasBackground) UnloadTexture(gGameState.background);
     for (int i = 0; i < gGameState.spriteCount; i++)
         UnloadTexture(gGameState.sprites[i].texture);
