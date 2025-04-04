@@ -42,13 +42,6 @@ list(char *) musicLRU;
 list(char *) spriteLRU;
 
 typedef struct {
-    int nLevels;
-    lua_Debug frames[4096];
-} LuaCallStack;
-
-typedef struct {
-    lua_State *sceneThread;
-    LuaCallStack callStack;
     Texture2D background;
     Music music;
     Sprite sprites[CACHE_SIZE];
@@ -112,268 +105,61 @@ enum {
 static char gCurrentScene[BUFFER_SIZE] = "";
 static char gLastScene[BUFFER_SIZE] = "";
 
-/* --- API Call Recording System --- */
-
-// Define an enumeration for our API call types.
-typedef enum {
-    API_MODULE_INIT,
-    API_LOAD_BACKGROUND,
-    API_LOAD_SPRITE,
-    API_PLAY_MUSIC,
-    API_PLAY_SOUND,
-    API_SHOW_TEXT,
-    API_CLEAR_TEXT,
-    API_POP_STATE
-} APICallType;
-
-// Define a union holding parameters for each API function.
-typedef struct {
-    APICallType type;
-    union {
-        struct {
-            char moduleFolder[BUFFER_SIZE];
-        } moduleInit;
-        struct {
-            char file[PATH_BUFFER_SIZE];
-        } loadBackground;
-        struct {
-            char file[PATH_BUFFER_SIZE];
-            int x;
-            int y;
-            char id[BUFFER_SIZE]; // Empty string if no id provided.
-        } loadSprite;
-        struct {
-            char file[PATH_BUFFER_SIZE];
-            float start;
-        } playMusic;
-        struct {
-            char file[PATH_BUFFER_SIZE];
-        } playSound;
-        struct {
-            char name[BUFFER_SIZE];
-            char text[BUFFER_SIZE];
-            Color nameColor;
-            Color textColor;
-            int posX;
-            int posY;
-            bool hasPos;
-        } showText;
-        // API_CLEAR_TEXT and API_POP_STATE carry no parameters.
-    } params;
-} APICall;
-
-// Global vector to hold API call records.
-vec(APICall) apiCallStack;
-
-// Push helpers for each API call type.
-static void pushAPICall_moduleInit(const char *moduleFolder) {
-    APICall call;
-    call.type = API_MODULE_INIT;
-    strncpy(call.params.moduleInit.moduleFolder, moduleFolder, BUFFER_SIZE-1);
-    call.params.moduleInit.moduleFolder[BUFFER_SIZE-1] = '\0';
-    push(&apiCallStack, call);
-}
-
-static void pushAPICall_loadBackground(const char *file) {
-    APICall call;
-    call.type = API_LOAD_BACKGROUND;
-    strncpy(call.params.loadBackground.file, file, PATH_BUFFER_SIZE-1);
-    call.params.loadBackground.file[PATH_BUFFER_SIZE-1] = '\0';
-    push(&apiCallStack, call);
-}
-
-static void pushAPICall_loadSprite(const char *file, int x, int y, const char *id) {
-    APICall call;
-    call.type = API_LOAD_SPRITE;
-    strncpy(call.params.loadSprite.file, file, PATH_BUFFER_SIZE-1);
-    call.params.loadSprite.file[PATH_BUFFER_SIZE-1] = '\0';
-    call.params.loadSprite.x = x;
-    call.params.loadSprite.y = y;
-    if (id)
-        strncpy(call.params.loadSprite.id, id, BUFFER_SIZE-1);
-    else
-        call.params.loadSprite.id[0] = '\0';
-    call.params.loadSprite.id[BUFFER_SIZE-1] = '\0';
-    push(&apiCallStack, call);
-}
-
-static void pushAPICall_playMusic(const char *file, float start) {
-    APICall call;
-    call.type = API_PLAY_MUSIC;
-    strncpy(call.params.playMusic.file, file, PATH_BUFFER_SIZE-1);
-    call.params.playMusic.file[PATH_BUFFER_SIZE-1] = '\0';
-    call.params.playMusic.start = start;
-    push(&apiCallStack, call);
-}
-
-static void pushAPICall_playSound(const char *file) {
-    APICall call;
-    call.type = API_PLAY_SOUND;
-    strncpy(call.params.playSound.file, file, PATH_BUFFER_SIZE-1);
-    call.params.playSound.file[PATH_BUFFER_SIZE-1] = '\0';
-    push(&apiCallStack, call);
-}
-
-static void pushAPICall_showText(const char *name, const char *text, Color nameColor, Color textColor, int posX, int posY, bool hasPos) {
-    APICall call;
-    call.type = API_SHOW_TEXT;
-    strncpy(call.params.showText.name, name, BUFFER_SIZE-1);
-    call.params.showText.name[BUFFER_SIZE-1] = '\0';
-    strncpy(call.params.showText.text, text, BUFFER_SIZE-1);
-    call.params.showText.text[BUFFER_SIZE-1] = '\0';
-    call.params.showText.nameColor = nameColor;
-    call.params.showText.textColor = textColor;
-    call.params.showText.posX = posX;
-    call.params.showText.posY = posY;
-    call.params.showText.hasPos = hasPos;
-    push(&apiCallStack, call);
-}
-
-static void pushAPICall_clearText(void) {
-    APICall call;
-    call.type = API_CLEAR_TEXT;
-    push(&apiCallStack, call);
-}
-
-static void pushAPICall_popState(void) {
-    APICall call;
-    call.type = API_POP_STATE;
-    push(&apiCallStack, call);
-}
-
-// Replay the stored API calls.
-static void replayAPICalls(void) {
-    printf("Replaying API calls:\n");
-    for (APICall *call = first(&apiCallStack);
-         call != end(&apiCallStack);
-         call = next(&apiCallStack, call))
-    {
-        switch(call->type) {
-            case API_MODULE_INIT:
-                // Reapply module init.
-                gGameState.moduleFolder = strdup(call->params.moduleInit.moduleFolder);
-                printf("Replayed module_init: %s\n", call->params.moduleInit.moduleFolder);
-                break;
-            case API_LOAD_BACKGROUND: {
-                char path[PATH_BUFFER_SIZE];
-                snprintf(path, PATH_BUFFER_SIZE, "mods/%s/images/%s", gGameState.moduleFolder, call->params.loadBackground.file);
-                Texture2D *cached = get(&backgroundCache, path);
-                if (cached) {
-                    gGameState.background = *cached;
-                } else {
-                    gGameState.background = LoadTexture(path);
-                    char *key = strdup(path);
-                    insert(&backgroundCache, key, gGameState.background);
-                    insert(&backgroundLRU, first(&backgroundLRU), key);
-                }
-                printf("Replayed load_background: %s\n", call->params.loadBackground.file);
-                break;
-            }
-            case API_LOAD_SPRITE: {
-                char path[PATH_BUFFER_SIZE];
-                snprintf(path, PATH_BUFFER_SIZE, "mods/%s/images/%s", gGameState.moduleFolder, call->params.loadSprite.file);
-                Texture2D *cached = get(&spriteCache, path);
-                if (cached) {
-                    gGameState.sprites[gGameState.spriteCount].texture = *cached;
-                    updateLRU(&spriteLRU, path);
-                } else {
-                    gGameState.sprites[gGameState.spriteCount].texture = LoadTexture(path);
-                    char *key = strdup(path);
-                    insert(&spriteCache, key, gGameState.sprites[gGameState.spriteCount].texture);
-                    insert(&spriteLRU, first(&spriteLRU), key);
-                }
-                gGameState.sprites[gGameState.spriteCount].pos.x = call->params.loadSprite.x;
-                gGameState.sprites[gGameState.spriteCount].pos.y = call->params.loadSprite.y;
-                if (strlen(call->params.loadSprite.id) > 0) {
-                    strncpy(gGameState.sprites[gGameState.spriteCount].id, call->params.loadSprite.id, BUFFER_SIZE-1);
-                    gGameState.sprites[gGameState.spriteCount].id[BUFFER_SIZE-1] = '\0';
-                    gGameState.sprites[gGameState.spriteCount].hasID = true;
-                } else {
-                    gGameState.sprites[gGameState.spriteCount].hasID = false;
-                }
-                strncpy(gGameState.spritefiles[gGameState.spriteCount], path, PATH_BUFFER_SIZE);
-                gGameState.spriteCount++;
-                printf("Replayed load_sprite: %s\n", call->params.loadSprite.file);
-                break;
-            }
-            case API_PLAY_MUSIC: {
-                char path[PATH_BUFFER_SIZE];
-                snprintf(path, PATH_BUFFER_SIZE, "mods/%s/music/%s", gGameState.moduleFolder, call->params.playMusic.file);
-                Music *cached = get(&musicCache, path);
-                if (cached) {
-                    gGameState.music = *cached;
-                    updateLRU(&musicLRU, path);
-                } else {
-                    gGameState.music = LoadMusicStream(path);
-                    char *key = strdup(path);
-                    insert(&musicCache, key, gGameState.music);
-                    insert(&musicLRU, first(&musicLRU), key);
-                }
-                PlayMusicStream(gGameState.music);
-                if (call->params.playMusic.start > 0.0f)
-                    SeekMusicStream(gGameState.music, call->params.playMusic.start);
-                strncpy(gGameState.musicfile, path, PATH_BUFFER_SIZE);
-                gGameState.hasMusic = true;
-                printf("Replayed play_music: %s\n", call->params.playMusic.file);
-                break;
-            }
-            case API_PLAY_SOUND: {
-                char path[PATH_BUFFER_SIZE];
-                snprintf(path, PATH_BUFFER_SIZE, "mods/%s/music/%s", gGameState.moduleFolder, call->params.playSound.file);
-                Sound s = LoadSound(path);
-                PlaySound(s);
-                printf("Replayed play_sound: %s\n", call->params.playSound.file);
-                break;
-            }
-            case API_SHOW_TEXT: {
-                strncpy(gGameState.dialogName, call->params.showText.name, BUFFER_SIZE-1);
-                gGameState.dialogName[BUFFER_SIZE-1] = '\0';
-                strncpy(gGameState.dialogText, call->params.showText.text, BUFFER_SIZE-1);
-                gGameState.dialogText[BUFFER_SIZE-1] = '\0';
-                gGameState.dialogNameColor = call->params.showText.nameColor;
-                gGameState.textColor = call->params.showText.textColor;
-                if (call->params.showText.hasPos) {
-                    gGameState.dialogPos.x = (float)call->params.showText.posX;
-                    gGameState.dialogPos.y = (float)call->params.showText.posY;
-                    gGameState.dialogHasPos = true;
-                } else {
-                    gGameState.dialogHasPos = false;
-                }
-                gGameState.hasDialog = true;
-                printf("Replayed show_text: %s\n", call->params.showText.text);
-                break;
-            }
-            case API_CLEAR_TEXT:
-                gGameState.dialogText[0] = '\0';
-                gGameState.dialogName[0] = '\0';
-                gGameState.hasDialog = false;
-                gGameState.dialogHasPos = false;
-                printf("Replayed clear_text\n");
-                break;
-            case API_POP_STATE:
-                if (size(&gameStateStack) > 0) {
-                    GameState *state = get(&gameStateStack, size(&gameStateStack) - 1);
-                    gGameState = *state;
-                    gSceneThread = gGameState.sceneThread;
-                    erase(&gameStateStack, size(&gameStateStack) - 1);
-                    printf("Replayed pop_state\n");
-                }
-                break;
-            default:
-                break;
+static void updateLRU(list(char *) *lruList, const char *key) {
+    for_each(lruList, el) {
+        if (strcmp(*el, key) == 0) {
+            erase(lruList, el);
+            break;
         }
     }
-    cleanup(&apiCallStack);
-    init(&apiCallStack);
+    insert(lruList, first(lruList), (char *)key);
 }
 
-/* --- End API Call Recording System --- */
+static void LoadScene(const char *sceneFile) {
+    strncpy(gLastScene, gCurrentScene, BUFFER_SIZE - 1);
+    gLastScene[BUFFER_SIZE - 1] = '\0';
+    strncpy(gCurrentScene, sceneFile, BUFFER_SIZE - 1);
+    gCurrentScene[BUFFER_SIZE - 1] = '\0';
+    lua_pushstring(gL, gLastScene);
+    lua_setglobal(gL, "last_scene");
+
+    char path[PATH_BUFFER_SIZE];
+    snprintf(path, PATH_BUFFER_SIZE, "mods/%s/%s", gGameState.moduleFolder, sceneFile);
+    gSceneThread = lua_newthread(gL);
+    if (luaL_loadfile(gSceneThread, path) != LUA_OK) {
+        const char *error = lua_tostring(gSceneThread, -1);
+        fprintf(stderr, "Error loading scene: %s\n", error);
+        return;
+    }
+    push(&gameStateStack, gGameState);
+    int nres = 0;
+    int status = lua_resume(gSceneThread, gL, 0, &nres);
+    if (status != LUA_YIELD && status != LUA_OK) {
+        const char *error = lua_tostring(gSceneThread, -1);
+        fprintf(stderr, "Error starting scene: %s\n", error);
+    }
+}
+
+void rollbackScene(void) {
+    if (size(&gameStateStack) > 0) {
+        GameState snapshot = *(GameState*)last(&gameStateStack);
+        erase(&gameStateStack, size(&gameStateStack) - 1);
+        gGameState = snapshot;
+        TraceLog(LOG_INFO, "Rolled back to previous state and reloaded scene: %s", gCurrentScene);
+    } else {
+        TraceLog(LOG_INFO, "No previous state available to rollback.");
+    }
+    LoadScene(gCurrentScene);
+}
 
 /* --- Lua API --- */
+static int l_pop_state(lua_State *L) {
+    rollbackScene();
+    return 0;
+}
+
 static int l_module_init(lua_State *L) {
-    const char *modFolder = luaL_checkstring(L, 1);
-    gGameState.moduleFolder = modFolder;
-    pushAPICall_moduleInit(modFolder);
+    gGameState.moduleFolder = luaL_checkstring(L, 1);
     return 0;
 }
 
@@ -381,6 +167,7 @@ static int l_load_background(lua_State *L) {
     const char *file = luaL_checkstring(L, 1);
     char path[PATH_BUFFER_SIZE];
     snprintf(path, PATH_BUFFER_SIZE, "mods/%s/images/%s", gGameState.moduleFolder, file);
+
     Texture2D *cached = get(&backgroundCache, path);
     if (cached) {
         gGameState.background = *cached;
@@ -395,7 +182,6 @@ static int l_load_background(lua_State *L) {
     }
     strncpy(gGameState.bgfile, path, PATH_BUFFER_SIZE);
     gGameState.hasBackground = true;
-    pushAPICall_loadBackground(file);
     return 0;
 }
 
@@ -407,10 +193,13 @@ static int l_load_sprite(lua_State *L) {
     if (lua_gettop(L) >= 4 && lua_isstring(L, 4))
         id = lua_tostring(L, 4);
     Vector2 pos = { (float)x, (float)y };
+
     if (gGameState.spriteCount >= CACHE_SIZE)
         return -1;
+
     char path[PATH_BUFFER_SIZE];
     snprintf(path, PATH_BUFFER_SIZE, "mods/%s/images/%s", gGameState.moduleFolder, file);
+
     Texture2D *cached = get(&spriteCache, path);
     if (cached) {
         gGameState.sprites[gGameState.spriteCount].texture = *cached;
@@ -433,7 +222,24 @@ static int l_load_sprite(lua_State *L) {
     }
     strncpy(gGameState.spritefiles[gGameState.spriteCount], path, PATH_BUFFER_SIZE);
     gGameState.spriteCount++;
-    pushAPICall_loadSprite(file, x, y, id);
+    return 0;
+}
+
+static int l_unload_sprite(lua_State *L) {
+    const char *id = luaL_checkstring(L, 1);
+    for (int i = 0; i < gGameState.spriteCount; i++) {
+        if (gGameState.sprites[i].hasID && strcmp(gGameState.sprites[i].id, id) == 0) {
+            UnloadTexture(gGameState.sprites[i].texture);
+            if(!erase(&spriteCache, gGameState.spritefiles[i])) TraceLog(LOG_INFO, "Sprite was now in cache: %s", id); 
+            for (int j = i; j < gGameState.spriteCount - 1; j++) {
+                strncpy(gGameState.spritefiles[j], gGameState.spritefiles[j + 1], PATH_BUFFER_SIZE);
+                gGameState.sprites[j] = gGameState.sprites[j + 1];
+            }
+            gGameState.spriteCount--;
+            TraceLog(LOG_INFO, "Unloaded sprite with id: %s", id);
+            break;
+        }
+    }
     return 0;
 }
 
@@ -444,6 +250,7 @@ static int l_play_music(lua_State *L) {
         start = lua_tonumber(L, 2);
     char path[PATH_BUFFER_SIZE];
     snprintf(path, PATH_BUFFER_SIZE, "mods/%s/music/%s", gGameState.moduleFolder, file);
+
     Music *cached = get(&musicCache, path);
     if (cached) {
         gGameState.music = *cached;
@@ -461,7 +268,6 @@ static int l_play_music(lua_State *L) {
         SeekMusicStream(gGameState.music, start);
     strncpy(gGameState.musicfile, path, PATH_BUFFER_SIZE);
     gGameState.hasMusic = true;
-    pushAPICall_playMusic(file, start);
     return 0;
 }
 
@@ -472,7 +278,6 @@ static int l_play_sound(lua_State *L) {
     Sound s = LoadSound(path);
     PlaySound(s);
     TraceLog(LOG_INFO, "Played sound: %s", file);
-    pushAPICall_playSound(file);
     return 0;
 }
 
@@ -543,7 +348,6 @@ static int l_show_text(lua_State *L) {
     }
     gGameState.hasDialog = true;
     TraceLog(LOG_INFO, "Show text: %s", gGameState.dialogText);
-    pushAPICall_showText(char_name, text, nameColor, textColor, posX, posY, hasPos);
     return lua_yield(L, 0);
 }
 
@@ -553,32 +357,370 @@ static int l_clear_text(lua_State *L) {
     gGameState.dialogName[0] = '\0';
     gGameState.hasDialog = false;
     gGameState.dialogHasPos = false;
-    pushAPICall_clearText();
     return 0;
 }
 
-static int l_pop_state(lua_State *L) {
-    if (size(&gameStateStack) == 0) {
-        lua_pushboolean(L, false);
-        return 1;
+static int l_set_choices(lua_State *L) {
+    if (!lua_istable(L, 1)) return 0;
+    gGameState.choiceCount = 0;
+    lua_pushnil(L);
+    while (lua_next(L, 1) && gGameState.choiceCount < MAX_CHOICES) {
+        if (lua_istable(L, -1)) {
+            lua_getfield(L, -1, "text");
+            lua_getfield(L, -2, "scene");
+            const char *text = luaL_checkstring(L, -2);
+            const char *scene = luaL_checkstring(L, -1);
+            strncpy(gGameState.choices[gGameState.choiceCount].text, text, BUFFER_SIZE - 1);
+            gGameState.choices[gGameState.choiceCount].text[BUFFER_SIZE - 1] = '\0';
+            strncpy(gGameState.choices[gGameState.choiceCount].scene, scene, BUFFER_SIZE - 1);
+            gGameState.choices[gGameState.choiceCount].scene[BUFFER_SIZE - 1] = '\0';
+            gGameState.choiceCount++;
+            lua_pop(L, 2);
+        }
+        lua_pop(L, 1);
     }
-    GameState *state = get(&gameStateStack, size(&gameStateStack) - 1);
-    gGameState = *state;
-    gSceneThread = gGameState.sceneThread;  // restore the coroutine (and its call stack)
-    erase(&gameStateStack, size(&gameStateStack) - 1);
-    pushAPICall_popState();
-    lua_pushboolean(L, true);
-    return 1;
+    return lua_yield(L, 0);
 }
 
-/* End Lua API */
+static int l_quit(lua_State *L) {
+    (void)L;
+    gQuit = true;
+    return 0;
+}
+/* --- End Lua API --- */
 
-/* --- OptionsStyle, genericChoose, getModuleLabel, onModuleSelect, chooseModule, getSceneLabel, onSceneSelect, chooseScene, getMenuItems, menuSelect, mainMenu, pauseMenuSelect, pauseMenu, updateBackground, updateText, cachePrefetched, prefetchAssets, invAssets --- */
-// (These functions remain unchanged from your code.)
+typedef struct{;
+    int font;
+    int padding;
+    int spacing;
+    int buttonHeight; // if 0, computed as font + 2*padding
+    bool center;      // if true, center horizontally on screen; if false, use baseRect.x and baseRect.width
+    Rectangle baseRect; // used for starting y (and x when not centered)
+} OptionsStyle;
 
-// ...
-// (Rest of your code here; see your original code.)
-// ...
+void genericChoose(void* data, int* shortcuts, int count, const char* (*getLabel)(int, void*), void (*onSelect)(int, void*), OptionsStyle style) {
+    int btnHeight = (style.buttonHeight != 0) ? style.buttonHeight : style.font + 2 * style.padding;
+    int textWidth = 0;
+    int maxWidth = 0;
+    for (int i = 0; i < count; i++) {
+        textWidth = MeasureText(getLabel(i, data), style.font);
+        maxWidth = maxWidth < textWidth ? textWidth : maxWidth;
+    }
+    int btnWidth = textWidth + 2 * style.padding;
+    int btnX = style.center ? (GetScreenWidth() - btnWidth) / 2 : style.baseRect.x + (style.baseRect.width - btnWidth) / 2;
+    for (int i = 0; i < count; i++) {
+        int btnY = style.baseRect.y + i * (btnHeight + style.spacing);
+        Rectangle btnRect = { (float)btnX, (float)btnY, (float)btnWidth, (float)btnHeight };
+
+        if (IsKeyPressed(shortcuts[i]) || GuiButton(btnRect, getLabel(i, data)))
+            onSelect(i, data);
+    }
+}
+
+const char* getModuleLabel(int index, void* data) {
+    FilePathList* scenes = (FilePathList*)data;
+    return GetFileName(scenes->paths[index]);
+}
+
+void onModuleSelect(int index, void* data) {
+    FilePathList* scenes = (FilePathList*)data;
+    const char* fileName = GetFileName(scenes->paths[index]);
+    LoadScene(fileName);
+    screen = GAME;
+    menu = NONE;
+}
+
+void chooseModule(FilePathList* scenes) {
+    int shortCut[] = { KEY_ONE, KEY_TWO, KEY_THREE, KEY_FOUR, KEY_FIVE, KEY_SIX, KEY_SEVEN, KEY_EIGHT, KEY_NINE, KEY_ZERO };
+    OptionsStyle style = {
+        .font = 20,
+        .padding = 5,
+        .spacing = 10,
+        .buttonHeight = 0,  // computed as font + 2*padding
+        .center = false,
+        .baseRect = { (float)GetScreenWidth()/2 - 200, (float)GetScreenHeight()/2 - 100, 400, 250 },
+    };
+    genericChoose((void*)scenes, shortCut, scenes->count, getModuleLabel, onModuleSelect, style);
+}
+
+static inline const char* getSceneLabel(int index, void* data) {
+    Choice* choices = (Choice*)data;
+    return choices[index].text;
+}
+
+static inline void onSceneSelect(int index, void* data) {
+    Choice* choices = (Choice*)data;
+    gGameState.choiceCount = 0;
+    LoadScene(choices[index].scene);
+}
+
+void chooseScene() {
+    int shortCut[] = { KEY_ONE, KEY_TWO, KEY_THREE, KEY_FOUR, KEY_FIVE, KEY_SIX, KEY_SEVEN, KEY_EIGHT, KEY_NINE, KEY_ZERO };
+    OptionsStyle style = {
+        .font = 20,
+        .padding = 5,
+        .spacing = 10,
+        .buttonHeight = 0,
+        .center = true,
+        .baseRect = { (float)GetScreenWidth()/2 - 200, (float)GetScreenHeight()/2 - 100, 400, 250 },
+    };
+    genericChoose((void*)gGameState.choices, shortCut, gGameState.choiceCount, getSceneLabel, onSceneSelect, style);
+}
+
+static inline const char* getMenuItems(int index, void* data) {
+    char** choices = (char**)data;
+    return choices[index];
+}
+
+static inline void menuSelect(int index, void* data) {
+    (void)data;    
+    switch (index) {
+        case 0: {
+            menu = MODULE;
+        } break;
+        case 1: {
+            menu = SETTINGS;
+        } break;
+        case 2: {
+            menu = LOAD;
+        } break;
+        case 3: {
+            gQuit = true;
+        } break;
+        default: break;
+    }
+}
+
+void mainMenu() {
+    int shortCut[] = { KEY_NULL, KEY_L, KEY_S, KEY_Q }; 
+    char* choices[] = { "Select Module", "Load Game", "Settings", "Quit" };
+    int count = 4;
+    OptionsStyle style = {
+        .font = 40,
+        .padding = 5,
+        .spacing = 10,
+        .buttonHeight = 30,  // computed as font + 2*padding
+        .center = false,
+        .baseRect = { (float)GetScreenWidth()/2 - 200, (float)GetScreenHeight()/2 - 100, 400, 250 },
+    };
+    genericChoose((void*)choices, shortCut, count, getMenuItems, menuSelect, style);
+}
+
+static inline void pauseMenuSelect(int index, void* data) {
+    (void)data;    
+    switch (index) {
+        case 0: {
+            gGameState.isPaused = false;
+        } break;
+        case 1: {
+            menu = SAVE;
+        } break;
+        case 2: {
+            menu = LOAD;
+        } break;
+        case 3: {
+            menu = SETTINGS;
+            gGameState.isPaused = false;
+        } break;
+        case 4: {
+            if (gGameState.hasBackground) UnloadTexture(gGameState.background);
+            gGameState.hasBackground = false;
+            for (int i = 0; i < gGameState.spriteCount; i++)
+                UnloadTexture(gGameState.sprites[i].texture);
+            if (gGameState.hasMusic) {
+                StopMusicStream(gGameState.music);
+                UnloadMusicStream(gGameState.music);
+            }
+            cleanup(&backgroundCache);
+            cleanup(&musicCache);
+            cleanup(&spriteCache);
+            cleanup(&gameStateStack);
+            cleanup(&backgroundLRU);
+            cleanup(&musicLRU);
+            cleanup(&spriteLRU);
+
+            gGameState.hasDialog = false;
+            gGameState.moduleFolder = "";
+            gGameState.isPaused = false;
+            menu = NONE;
+            screen = TITLE;
+        } break;
+        case 5: {
+            gQuit = true;
+        } break;
+        default: break;
+    }
+}
+
+void pauseMenu() {
+    DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Fade(GRAY, 0.8f));
+    int shortCut[] = { KEY_R, KEY_G, KEY_L, KEY_S, KEY_M, KEY_Q }; 
+    char* choices[] = { "Resume", "Save Game", "Load Game", "Settings", "Main Menu", "Quit" };
+    int count = 6;
+    OptionsStyle style = {
+        .font = 40,
+        .padding = 5,
+        .spacing = 10,
+        .buttonHeight = 30,  // computed as font + 2*padding
+        .center = false,
+        .baseRect = { (float)GetScreenWidth()/2 - 200, (float)GetScreenHeight()/2 - 100, 400, 250 },
+    };
+    genericChoose((void*)choices, shortCut, count, getMenuItems, pauseMenuSelect, style);
+}
+
+void updateBackground(Shader* spriteOutline) {
+    Texture2D bgTex = gGameState.background;
+    int windowWidth = GetScreenWidth(), windowHeight = GetScreenHeight();
+    float scale_bg = (float)windowHeight / bgTex.height;
+    float desired_tex_width = (float)windowWidth / scale_bg;
+    float crop_x = (bgTex.width - desired_tex_width) / 2.0f;
+    Rectangle srcRect = { crop_x, 0, desired_tex_width, (float)bgTex.height };
+    Rectangle dstRect = { 0, 0, (float)windowWidth, (float)windowHeight };
+    DrawTexturePro(bgTex, srcRect, dstRect, (Vector2){0,0}, 0.0f, WHITE);
+
+    if (gGameState.spriteCount > 0) {
+        float outlineSize = 8.0f;
+        float outlineColor[4] = { 0.2f, 0.2f, 0.2f, 0.2f };
+
+        for (int i = 0; i < gGameState.spriteCount; i++) {
+            Texture2D sprTex = gGameState.sprites[i].texture;
+            float drawn_x = (gGameState.sprites[i].pos.x - crop_x) * scale_bg;
+            float drawn_y = gGameState.sprites[i].pos.y * scale_bg;
+            float sprite_scale = (4.0/3.0 * windowHeight) / (float)sprTex.height;
+            Rectangle sprSrc = { 0, 0, (float)sprTex.width, (float)sprTex.height };
+            Rectangle sprDst = { drawn_x, drawn_y, sprTex.width * sprite_scale, sprTex.height * sprite_scale };
+
+            float textureSize[2] = { (float)sprTex.width, (float)sprTex.height };
+            int outlineSizeLoc = GetShaderLocation(*spriteOutline, "outlineSize");
+            int outlineColorLoc = GetShaderLocation(*spriteOutline, "outlineColor");
+            int textureSizeLoc = GetShaderLocation(*spriteOutline, "textureSize");
+            SetShaderValue(*spriteOutline, outlineSizeLoc, &outlineSize, SHADER_UNIFORM_FLOAT);
+            SetShaderValue(*spriteOutline, outlineColorLoc, outlineColor, SHADER_UNIFORM_VEC4);
+            SetShaderValue(*spriteOutline, textureSizeLoc, textureSize, SHADER_UNIFORM_VEC2);
+
+            BeginShaderMode(*spriteOutline);
+            DrawTexturePro(sprTex, sprSrc, sprDst, (Vector2){0, 0}, 0.0f, WHITE);
+            EndShaderMode();
+        }
+    }
+}
+
+const int screenWidth = 800, screenHeight = 450;
+// Proportions for text box
+const float defaultXRel = 60.0f / (float)screenWidth;
+const float defaultYRel = 330.0f / (float)screenHeight;
+const float defaultWidthRel = 685.0f / (float)screenWidth;
+const float defaultHeightRel = 100.0f / (float)screenHeight;
+bool forward = false;
+void updateText() {
+    Rectangle textBox;
+    if (gGameState.dialogHasPos) {
+        textBox.x = gGameState.dialogPos.x + defaultXRel * GetScreenWidth();
+        textBox.y = gGameState.dialogPos.y + defaultYRel * GetScreenHeight();
+    } else {
+        textBox.x = defaultXRel * GetScreenWidth();
+        textBox.y = defaultYRel * GetScreenHeight();
+    }
+    textBox.width = defaultWidthRel * GetScreenWidth();
+    textBox.height = defaultHeightRel * GetScreenHeight();
+    int textPadding = 10;
+    Rectangle innerBox = { textBox.x + textPadding, textBox.y + textPadding,
+                           textBox.width - 2 * textPadding, textBox.height - 2 * textPadding };
+    DrawRectangleRec(textBox, Fade(BLACK, 0.5f));
+    
+    if (gGameState.dialogName[0])
+        DrawText(gGameState.dialogName, textBox.x + 5, textBox.y - 25, 20, gGameState.dialogNameColor);
+    DrawTextBoxed(GetFontDefault(), gGameState.dialogText, innerBox, 20, 2, true, gGameState.textColor);
+
+    int btnWidth = 40, btnHeight = 30;
+    Rectangle backBut = { textBox.width + textBox.x - 2*10 - 2*btnWidth, textBox.y + textBox.height - btnHeight - 10, btnWidth, btnHeight };
+    if (GuiButton(backBut, "#130#")) {
+        rollbackScene();
+    }
+    Rectangle forwardBut = { textBox.width + textBox.x - 10 - btnWidth, textBox.y + textBox.height - btnHeight - 10, btnWidth, btnHeight };
+    if (GuiButton(forwardBut, "#131#")) {
+        forward = true;
+    }
+}
+
+void cachePrefetched(const char *funcName, const char *path) {
+    if (strcmp(funcName, "load_background") == 0) {
+        Texture2D *cached = get(&backgroundCache, path);
+        if (!cached) {
+            Texture2D tex = LoadTexture(path);
+            char *key = strdup(path);
+            insert(&backgroundCache, key, tex);
+            TraceLog(LOG_INFO, "Cached background: %s", path);
+        }
+    } else if (strcmp(funcName, "load_sprite") == 0) {
+        Texture2D *cached = get(&spriteCache, path);
+        if (!cached) {
+            Texture2D tex = LoadTexture(path);
+            char *key = strdup(path);
+            insert(&spriteCache, key, tex);
+            TraceLog(LOG_INFO, "Cached sprite: %s", path);
+        }
+    } else if (strcmp(funcName, "load_music") == 0) {
+        Music *cached = get(&musicCache, path);
+        if (!cached) {
+            Music music = LoadMusicStream(path);
+            char *key = strdup(path);
+            insert(&musicCache, key, music);
+            TraceLog(LOG_INFO, "Cached music: %s", path);
+        }
+    }
+}
+
+// TODO: just use the current scene file you dunce
+void prefetchAssets(lua_State *L) {
+    lua_Debug ar;
+    int level = 0;
+    while (lua_getstack(L, level, &ar)) {
+        lua_getinfo(L, "nSl", &ar);
+        if (ar.name &&
+            (strcmp(ar.name, "load_background") == 0 ||
+             strcmp(ar.name, "load_sprite") == 0 ||
+             strcmp(ar.name, "load_music") == 0)) {
+            // Assume the first local variable is the asset file path.
+            const char *assetPath = lua_getlocal(L, &ar, 1);
+            if (assetPath) {
+                cachePrefetched(ar.name, assetPath);
+                lua_pop(L, 1); // pop the local
+            }
+        }
+        level++;
+    }
+}
+
+void invAssets(void) {
+    while (size(&backgroundLRU) > CACHE_SIZE) {
+        char *key = (char *)last(&backgroundLRU);
+        Texture2D *tex = get(&backgroundCache, key);
+        if (tex) UnloadTexture(*tex);
+        erase(&backgroundCache, key);
+        erase(&backgroundLRU, last(&backgroundLRU));
+        TraceLog(LOG_INFO, "Evicted background: %s", key);
+    }
+    while (size(&musicLRU) > CACHE_SIZE) {
+        char *key = (char *)last(&musicLRU);
+        Music *mus = get(&musicCache, key);
+        if (mus) {
+            StopMusicStream(*mus);
+            UnloadMusicStream(*mus);
+        }
+        erase(&musicCache, key);
+        erase(&musicLRU, last(&musicLRU));
+        TraceLog(LOG_INFO, "Evicted music: %s", key);
+    }
+    while (size(&spriteLRU) > CACHE_SIZE) {
+        char *key = (char *)last(&spriteLRU);
+        Texture2D *tex = get(&spriteCache, key);
+        if (tex) UnloadTexture(*tex);
+        erase(&spriteCache, key);
+        erase(&spriteLRU, last(&spriteLRU));
+        TraceLog(LOG_INFO, "Evicted sprite: %s", key);
+    }
+}
 
 int main(void) {
     InitWindow(screenWidth, screenHeight, "VN Engine");
@@ -608,8 +750,6 @@ int main(void) {
     init(&backgroundLRU);
     init(&musicLRU);
     init(&spriteLRU);
-    // Initialize our API call stack
-    init(&apiCallStack);
 
     SetTargetFPS(60);
     while (!gQuit) {
@@ -636,13 +776,11 @@ int main(void) {
             if (gGameState.hasMusic) UpdateMusicStream(gGameState.music);
     
             if (gGameState.hasDialog && gGameState.choiceCount == 0) {
-                if (lua_status(gSceneThread) == LUA_YIELD &&
-                    ( forward || IsKeyPressed(KEY_SPACE))) {
+                if (lua_status(gSceneThread) == LUA_YIELD && ( forward || IsKeyPressed(KEY_SPACE))) {
                     forward = false;
                     int nres = 0;
                     int status = lua_resume(gSceneThread, gL, 0, &nres);
                     if (status == LUA_YIELD) {
-                        pushGameState();
                         prefetchAssets(gSceneThread);
                     }
                     if (status != LUA_YIELD && status != LUA_OK) {
