@@ -35,8 +35,8 @@ typedef struct {
 static bool gQuit = false;
 
 omap(char *, Texture2D) backgroundCache;
-omap(char *, Music)       musicCache;
-omap(char *, Texture2D)   spriteCache;
+omap(char *, Music)     musicCache;
+omap(char *, Texture2D) spriteCache;
 list(char *) backgroundLRU;
 list(char *) musicLRU;
 list(char *) spriteLRU;
@@ -115,7 +115,56 @@ static void updateLRU(list(char *) *lruList, const char *key) {
     insert(lruList, first(lruList), (char *)key);
 }
 
-static void LoadScene(const char *sceneFile) {
+void cachePrefetched(const char *funcName, const char *path) {
+    if (strcmp(funcName, "load_background") == 0) {
+        Texture2D *cached = get(&backgroundCache, path);
+        if (!cached) {
+            Texture2D tex = LoadTexture(path);
+            char *key = strdup(path);
+            insert(&backgroundCache, key, tex);
+            TraceLog(LOG_INFO, "Cached background: %s", path);
+        }
+    } else if (strcmp(funcName, "load_sprite") == 0) {
+        Texture2D *cached = get(&spriteCache, path);
+        if (!cached) {
+            Texture2D tex = LoadTexture(path);
+            char *key = strdup(path);
+            insert(&spriteCache, key, tex);
+            TraceLog(LOG_INFO, "Cached sprite: %s", path);
+        }
+    } else if (strcmp(funcName, "load_music") == 0) {
+        Music *cached = get(&musicCache, path);
+        if (!cached) {
+            Music music = LoadMusicStream(path);
+            char *key = strdup(path);
+            insert(&musicCache, key, music);
+            TraceLog(LOG_INFO, "Cached music: %s", path);
+        }
+    }
+}
+
+void prefetchAssets(lua_State *L) {
+    if (!L) return;
+    lua_Debug ar;
+    int level = 0;
+    while (lua_getstack(L, level, &ar)) {
+        if (lua_getinfo(L, "nSl", &ar) == 0)
+            break;
+        if (ar.name && (strcmp(ar.name, "load_background") == 0 ||
+                        strcmp(ar.name, "load_sprite") == 0 ||
+                        strcmp(ar.name, "load_music") == 0)) {
+            if (lua_getlocal(L, &ar, 1) != NULL && lua_isstring(L, -1)) {
+                const char *assetPath = lua_tostring(L, -1);
+                cachePrefetched(ar.name, assetPath);
+            }
+            lua_pop(L, 1); // pop the local variable
+        }
+        level++;
+    }
+}
+
+static void loadScene(const char *sceneFile) {
+    prefetchAssets(gSceneThread);
     strncpy(gLastScene, gCurrentScene, BUFFER_SIZE - 1);
     gLastScene[BUFFER_SIZE - 1] = '\0';
     strncpy(gCurrentScene, sceneFile, BUFFER_SIZE - 1);
@@ -141,15 +190,26 @@ static void LoadScene(const char *sceneFile) {
 }
 
 void rollbackScene(void) {
-    if (size(&gameStateStack) > 0) {
-        GameState snapshot = *(GameState*)last(&gameStateStack);
-        erase(&gameStateStack, size(&gameStateStack) - 1);
-        gGameState = snapshot;
-        TraceLog(LOG_INFO, "Rolled back to previous state and reloaded scene: %s", gCurrentScene);
-    } else {
-        TraceLog(LOG_INFO, "No previous state available to rollback.");
+    if (gGameState.hasBackground) {
+        UnloadTexture(gGameState.background);
+        gGameState.hasBackground = false;
     }
-    LoadScene(gCurrentScene);
+    for (int i = 0; i < gGameState.spriteCount; i++) {
+        UnloadTexture(gGameState.sprites[i].texture);
+    }
+    gGameState.spriteCount = 0;
+    if (gGameState.hasMusic) {
+        StopMusicStream(gGameState.music);
+        UnloadMusicStream(gGameState.music);
+        gGameState.hasMusic = false;
+    }
+    gGameState.hasDialog = false;
+    gGameState.choiceCount = 0;
+    
+    gSceneThread = lua_newthread(gL);
+    loadScene(gCurrentScene);
+    
+    TraceLog(LOG_INFO, "Rolled back and restarted scene: %s", gCurrentScene);
 }
 
 /* --- Lua API --- */
@@ -425,7 +485,7 @@ const char* getModuleLabel(int index, void* data) {
 void onModuleSelect(int index, void* data) {
     FilePathList* scenes = (FilePathList*)data;
     const char* fileName = GetFileName(scenes->paths[index]);
-    LoadScene(fileName);
+    loadScene(fileName);
     screen = GAME;
     menu = NONE;
 }
@@ -451,7 +511,7 @@ static inline const char* getSceneLabel(int index, void* data) {
 static inline void onSceneSelect(int index, void* data) {
     Choice* choices = (Choice*)data;
     gGameState.choiceCount = 0;
-    LoadScene(choices[index].scene);
+    loadScene(choices[index].scene);
 }
 
 void chooseScene() {
@@ -643,55 +703,6 @@ void updateText() {
     }
 }
 
-void cachePrefetched(const char *funcName, const char *path) {
-    if (strcmp(funcName, "load_background") == 0) {
-        Texture2D *cached = get(&backgroundCache, path);
-        if (!cached) {
-            Texture2D tex = LoadTexture(path);
-            char *key = strdup(path);
-            insert(&backgroundCache, key, tex);
-            TraceLog(LOG_INFO, "Cached background: %s", path);
-        }
-    } else if (strcmp(funcName, "load_sprite") == 0) {
-        Texture2D *cached = get(&spriteCache, path);
-        if (!cached) {
-            Texture2D tex = LoadTexture(path);
-            char *key = strdup(path);
-            insert(&spriteCache, key, tex);
-            TraceLog(LOG_INFO, "Cached sprite: %s", path);
-        }
-    } else if (strcmp(funcName, "load_music") == 0) {
-        Music *cached = get(&musicCache, path);
-        if (!cached) {
-            Music music = LoadMusicStream(path);
-            char *key = strdup(path);
-            insert(&musicCache, key, music);
-            TraceLog(LOG_INFO, "Cached music: %s", path);
-        }
-    }
-}
-
-// TODO: just use the current scene file you dunce
-void prefetchAssets(lua_State *L) {
-    lua_Debug ar;
-    int level = 0;
-    while (lua_getstack(L, level, &ar)) {
-        lua_getinfo(L, "nSl", &ar);
-        if (ar.name &&
-            (strcmp(ar.name, "load_background") == 0 ||
-             strcmp(ar.name, "load_sprite") == 0 ||
-             strcmp(ar.name, "load_music") == 0)) {
-            // Assume the first local variable is the asset file path.
-            const char *assetPath = lua_getlocal(L, &ar, 1);
-            if (assetPath) {
-                cachePrefetched(ar.name, assetPath);
-                lua_pop(L, 1); // pop the local
-            }
-        }
-        level++;
-    }
-}
-
 void invAssets(void) {
     while (size(&backgroundLRU) > CACHE_SIZE) {
         char *key = (char *)last(&backgroundLRU);
@@ -780,9 +791,6 @@ int main(void) {
                     forward = false;
                     int nres = 0;
                     int status = lua_resume(gSceneThread, gL, 0, &nres);
-                    if (status == LUA_YIELD) {
-                        prefetchAssets(gSceneThread);
-                    }
                     if (status != LUA_YIELD && status != LUA_OK) {
                         const char *error = lua_tostring(gSceneThread, -1);
                         fprintf(stderr, "Error resuming scene: %s\n", error);
