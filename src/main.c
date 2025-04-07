@@ -33,6 +33,9 @@ typedef struct {
 
 /* Global state */
 static bool gQuit = false;
+float masterVolume = 1.0;
+float soundVolume = 1.0;
+float musicVolume = 1.0;
 
 omap(char *, Texture2D) backgroundCache;
 omap(char *, Music)     musicCache;
@@ -46,6 +49,9 @@ typedef struct {
     Music music;
     Sprite sprites[CACHE_SIZE];
     int spriteCount;
+    int screenWidth; 
+    int screenHeight;
+    bool settings;
     bool isPaused;
     bool hasMusic;
     bool hasBackground;
@@ -66,6 +72,7 @@ typedef struct {
 
 static GameState gGameState = {
     .spriteCount = 0,
+    .settings = false,
     .isPaused = false,
     .hasMusic = false,
     .hasBackground = false,
@@ -189,7 +196,7 @@ static void loadScene(const char *sceneFile) {
     }
 }
 
-void rollbackScene(void) {
+static void rollbackScene(void) {
     if (gGameState.hasBackground) {
         UnloadTexture(gGameState.background);
         gGameState.hasBackground = false;
@@ -336,6 +343,7 @@ static int l_play_sound(lua_State *L) {
     char path[PATH_BUFFER_SIZE];
     snprintf(path, PATH_BUFFER_SIZE, "mods/%s/music/%s", gGameState.moduleFolder, file);
     Sound s = LoadSound(path);
+    SetSoundVolume(s, soundVolume);
     PlaySound(s);
     TraceLog(LOG_INFO, "Played sound: %s", file);
     return 0;
@@ -448,7 +456,6 @@ static int l_quit(lua_State *L) {
     return 0;
 }
 /* --- End Lua API --- */
-
 typedef struct{;
     int font;
     int padding;
@@ -458,6 +465,8 @@ typedef struct{;
     Rectangle baseRect; // used for starting y (and x when not centered)
 } OptionsStyle;
 
+OptionsStyle gStyle = {0};
+
 void genericChoose(void* data, int* shortcuts, int count, const char* (*getLabel)(int, void*), void (*onSelect)(int, void*), OptionsStyle style) {
     int btnHeight = (style.buttonHeight != 0) ? style.buttonHeight : style.font + 2 * style.padding;
     int textWidth = 0;
@@ -466,7 +475,7 @@ void genericChoose(void* data, int* shortcuts, int count, const char* (*getLabel
         textWidth = MeasureText(getLabel(i, data), style.font);
         maxWidth = maxWidth < textWidth ? textWidth : maxWidth;
     }
-    int btnWidth = textWidth + 2 * style.padding;
+    int btnWidth = maxWidth + 2 * style.padding;
     int btnX = style.center ? (GetScreenWidth() - btnWidth) / 2 : style.baseRect.x + (style.baseRect.width - btnWidth) / 2;
     for (int i = 0; i < count; i++) {
         int btnY = style.baseRect.y + i * (btnHeight + style.spacing);
@@ -492,15 +501,8 @@ void onModuleSelect(int index, void* data) {
 
 void chooseModule(FilePathList* scenes) {
     int shortCut[] = { KEY_ONE, KEY_TWO, KEY_THREE, KEY_FOUR, KEY_FIVE, KEY_SIX, KEY_SEVEN, KEY_EIGHT, KEY_NINE, KEY_ZERO };
-    OptionsStyle style = {
-        .font = 20,
-        .padding = 5,
-        .spacing = 10,
-        .buttonHeight = 0,  // computed as font + 2*padding
-        .center = false,
-        .baseRect = { (float)GetScreenWidth()/2 - 200, (float)GetScreenHeight()/2 - 100, 400, 250 },
-    };
-    genericChoose((void*)scenes, shortCut, scenes->count, getModuleLabel, onModuleSelect, style);
+    OptionsStyle Style = gStyle;
+    genericChoose((void*)scenes, shortCut, scenes->count, getModuleLabel, onModuleSelect, Style);
 }
 
 static inline const char* getSceneLabel(int index, void* data) {
@@ -516,15 +518,8 @@ static inline void onSceneSelect(int index, void* data) {
 
 void chooseScene() {
     int shortCut[] = { KEY_ONE, KEY_TWO, KEY_THREE, KEY_FOUR, KEY_FIVE, KEY_SIX, KEY_SEVEN, KEY_EIGHT, KEY_NINE, KEY_ZERO };
-    OptionsStyle style = {
-        .font = 20,
-        .padding = 5,
-        .spacing = 10,
-        .buttonHeight = 0,
-        .center = true,
-        .baseRect = { (float)GetScreenWidth()/2 - 200, (float)GetScreenHeight()/2 - 100, 400, 250 },
-    };
-    genericChoose((void*)gGameState.choices, shortCut, gGameState.choiceCount, getSceneLabel, onSceneSelect, style);
+    OptionsStyle Style = gStyle;
+    genericChoose((void*)gGameState.choices, shortCut, gGameState.choiceCount, getSceneLabel, onSceneSelect, Style);
 }
 
 static inline const char* getMenuItems(int index, void* data) {
@@ -535,19 +530,10 @@ static inline const char* getMenuItems(int index, void* data) {
 static inline void menuSelect(int index, void* data) {
     (void)data;    
     switch (index) {
-        case 0: {
-            menu = MODULE;
-        } break;
-        case 1: {
-            menu = SETTINGS;
-        } break;
-        case 2: {
-            menu = LOAD;
-        } break;
-        case 3: {
-            gQuit = true;
-        } break;
-        default: break;
+        case 0: menu = MODULE; break;
+        case 1: menu = LOAD; break;
+        case 2: menu = SETTINGS; break;
+        case 3: gQuit = true; break;
     }
 }
 
@@ -555,15 +541,113 @@ void mainMenu() {
     int shortCut[] = { KEY_NULL, KEY_L, KEY_S, KEY_Q }; 
     char* choices[] = { "Select Module", "Load Game", "Settings", "Quit" };
     int count = 4;
-    OptionsStyle style = {
-        .font = 40,
-        .padding = 5,
-        .spacing = 10,
-        .buttonHeight = 30,  // computed as font + 2*padding
-        .center = false,
-        .baseRect = { (float)GetScreenWidth()/2 - 200, (float)GetScreenHeight()/2 - 100, 400, 250 },
-    };
-    genericChoose((void*)choices, shortCut, count, getMenuItems, menuSelect, style);
+    OptionsStyle Style = gStyle;
+    genericChoose((void*)choices, shortCut, count, getMenuItems, menuSelect, Style);
+}
+
+bool reditMode = false;
+bool seditMode = false;
+static bool borderlessMode = false;
+static int currentRes = 2; // default index: "1024x768"
+static int currentRefresh = 0; // default index: "60Hz"
+static void settingsMenu(void) {
+    if (reditMode || seditMode) GuiLock();
+
+    DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Fade(GRAY, 0.8f));
+    OptionsStyle Style = gStyle;
+    Style.font = 10;
+    Style.baseRect.width *= 0.66;
+    Style.baseRect.x += Style.baseRect.width/4;
+
+    int fontAlign = MeasureText("0.99", Style.font);
+    int sliderHeight = 10;
+    int verticalSpacing = Style.font + Style.padding + sliderHeight;
+
+    Rectangle titleRect = { Style.baseRect.x, Style.baseRect.y - 40, Style.baseRect.width, 30 };
+    DrawRectangleRec(titleRect, DARKGRAY);
+    DrawText("Settings", titleRect.x + (titleRect.width - MeasureText("Settings", Style.font)) / 2,
+             titleRect.y + (titleRect.height - Style.font) / 2, Style.font, WHITE);
+    
+    Rectangle soundGroupRect = { Style.baseRect.x + 10, Style.baseRect.y + 10, Style.baseRect.width - 20, (Style.font + 4) + 3 * verticalSpacing };
+    GuiGroupBox(soundGroupRect, "Sound");
+    int soundInnerX = soundGroupRect.x + 10;
+    int soundInnerY = soundGroupRect.y + Style.font + 4;
+    
+    int labelWidth = MeasureText("Master Volume", Style.font);
+    DrawText("Master Volume", soundInnerX, soundInnerY, Style.font, WHITE);
+    Rectangle sliderRect = { soundInnerX + labelWidth + 10, soundInnerY, (soundGroupRect.width - 20) - fontAlign - (labelWidth + 10), sliderHeight };
+    GuiSlider(sliderRect, NULL, TextFormat("%0.2f", masterVolume), &masterVolume, 0.0f, 1.0f);
+    soundInnerY += verticalSpacing;
+    
+    DrawText("Music Volume", soundInnerX, soundInnerY, Style.font, WHITE);
+    sliderRect = (Rectangle){ soundInnerX + labelWidth + 10, soundInnerY, (soundGroupRect.width - 20) - fontAlign - (labelWidth + 10), sliderHeight };
+    GuiSlider(sliderRect, NULL, TextFormat("%0.2f", musicVolume), &musicVolume, 0.0f, 1.0f);
+    soundInnerY += verticalSpacing;
+    
+    DrawText("SFX Volume", soundInnerX, soundInnerY, Style.font, WHITE);
+    sliderRect = (Rectangle){ soundInnerX + labelWidth + 10, soundInnerY, (soundGroupRect.width - 20) - fontAlign - (labelWidth + 10), sliderHeight };
+    GuiSlider(sliderRect, NULL, TextFormat("%0.2f", soundVolume), &soundVolume, 0.0f, 1.0f);
+    
+    int graphicsGroupY = soundGroupRect.y + soundGroupRect.height + 10;
+    Rectangle graphicsGroupRect = { Style.baseRect.x + 10, graphicsGroupY, Style.baseRect.width - 20, (Style.font + 4) + 3 * verticalSpacing };
+    GuiGroupBox(graphicsGroupRect, "Graphics");
+    int graphicsInnerX = graphicsGroupRect.x + 10;
+    int graphicsInnerY = graphicsGroupRect.y + Style.font + 4;
+    
+    float btnWidth = MeasureText("Return", Style.font) + 2 * Style.padding;
+    float btnX = Style.baseRect.x + Style.baseRect.width / 4 + (Style.baseRect.width / 2 - btnWidth) / 2;
+    if (GuiButton((Rectangle){ btnX, Style.baseRect.y + Style.baseRect.height - Style.buttonHeight, btnWidth, Style.buttonHeight }, "Return")) {
+        gGameState.settings = false;
+        if (screen == TITLE) menu = NONE;
+        if (screen == GAME) gGameState.isPaused = true;
+    }
+
+    labelWidth = MeasureText("Borderless Mode", Style.font);
+    int cbSize = Style.font + Style.padding;
+    int textPad = 5;
+    DrawText("Borderless Mode", graphicsInnerX, graphicsInnerY + (cbSize - Style.font) / 2, Style.font, WHITE);
+    Rectangle cbRect = { graphicsInnerX + labelWidth + textPad, graphicsInnerY, cbSize, cbSize };
+    bool prevBorderless = borderlessMode;
+    GuiCheckBox(cbRect, "", &borderlessMode);
+    if (prevBorderless != borderlessMode) {
+        ToggleBorderlessWindowed();
+        if (borderlessMode) {
+            gStyle.baseRect = (Rectangle){ (float)GetScreenWidth()/2 - 200, (float)GetScreenHeight()/2 - 100, 400, 250 };
+        } else {
+            // TODO: correctly set baserect
+            gStyle.baseRect = (Rectangle){ (float)gGameState.screenWidth/2 - 200, (float)gGameState.screenHeight/2 - 100, 400, 250 };
+        }
+    }
+
+    GuiUnlock();
+
+    graphicsInnerY += verticalSpacing;
+    DrawText("Resolution", graphicsInnerX, graphicsInnerY, Style.font, WHITE);
+    static char* resList = "640x480;800x600;1024x768;1280x720;1920x1080";
+    Rectangle resRect = { graphicsInnerX + labelWidth + 10, graphicsInnerY, (graphicsGroupRect.width - 20) - (labelWidth + 10), 20 };
+    if (GuiDropdownBox(resRect, resList, &currentRes, seditMode)) {
+        seditMode = !seditMode;
+        const char *options[] = { "640x480", "800x600", "1024x768", "1280x720", "1920x1080" };
+        int newWidth, newHeight;
+        sscanf(options[currentRes], "%dx%d", &newWidth, &newHeight);
+        SetWindowSize(newWidth, newHeight);
+        SetWindowPosition((GetMonitorWidth(0) - newWidth) / 2, (GetMonitorHeight(0) - newHeight) / 2);
+        gGameState.screenWidth = newWidth;
+        gGameState.screenHeight = newHeight;
+        gStyle.baseRect = (Rectangle){ (float)newWidth/2 - 200, (float)newHeight/2 - 100, 400, 250 };
+    }
+    
+    graphicsInnerY += verticalSpacing;
+    DrawText("Refresh Rate", graphicsInnerX, graphicsInnerY, Style.font, WHITE);
+    static char* refreshRateList = "60Hz;75Hz;120Hz;144Hz;240Hz";
+    Rectangle refreshRect = { graphicsInnerX + labelWidth + 10, graphicsInnerY, (graphicsGroupRect.width - 20) - (labelWidth + 10), 20 };
+    if (GuiDropdownBox(refreshRect, refreshRateList, &currentRefresh, reditMode)) {
+        reditMode = !reditMode;
+        const char *refreshOptions[] = { "60Hz", "75Hz", "120Hz", "144Hz", "240Hz" };
+        int newRate;
+        sscanf(refreshOptions[currentRefresh], "%d", &newRate);
+        SetTargetFPS(newRate);
+    }
 }
 
 static inline void pauseMenuSelect(int index, void* data) {
@@ -581,6 +665,7 @@ static inline void pauseMenuSelect(int index, void* data) {
         case 3: {
             menu = SETTINGS;
             gGameState.isPaused = false;
+            gGameState.settings = true;
         } break;
         case 4: {
             if (gGameState.hasBackground) UnloadTexture(gGameState.background);
@@ -617,18 +702,12 @@ void pauseMenu() {
     int shortCut[] = { KEY_R, KEY_G, KEY_L, KEY_S, KEY_M, KEY_Q }; 
     char* choices[] = { "Resume", "Save Game", "Load Game", "Settings", "Main Menu", "Quit" };
     int count = 6;
-    OptionsStyle style = {
-        .font = 40,
-        .padding = 5,
-        .spacing = 10,
-        .buttonHeight = 30,  // computed as font + 2*padding
-        .center = false,
-        .baseRect = { (float)GetScreenWidth()/2 - 200, (float)GetScreenHeight()/2 - 100, 400, 250 },
-    };
-    genericChoose((void*)choices, shortCut, count, getMenuItems, pauseMenuSelect, style);
+    OptionsStyle Style = gStyle;
+    GuiGroupBox((Rectangle){ Style.baseRect.x + Style.baseRect.width/4, Style.baseRect.y - 10, Style.baseRect.width/2, Style.baseRect.height }, "Paused");
+    genericChoose((void*)choices, shortCut, count, getMenuItems, pauseMenuSelect, Style);
 }
 
-void updateBackground(Shader* spriteOutline) {
+static inline void updateBackground(Shader* spriteOutline) {
     Texture2D bgTex = gGameState.background;
     int windowWidth = GetScreenWidth(), windowHeight = GetScreenHeight();
     float scale_bg = (float)windowHeight / bgTex.height;
@@ -665,24 +744,19 @@ void updateBackground(Shader* spriteOutline) {
     }
 }
 
-const int screenWidth = 800, screenHeight = 450;
 // Proportions for text box
-const float defaultXRel = 60.0f / (float)screenWidth;
-const float defaultYRel = 330.0f / (float)screenHeight;
-const float defaultWidthRel = 685.0f / (float)screenWidth;
-const float defaultHeightRel = 100.0f / (float)screenHeight;
 bool forward = false;
-void updateText() {
+static inline void updateText(Rectangle textRel) {
     Rectangle textBox;
     if (gGameState.dialogHasPos) {
-        textBox.x = gGameState.dialogPos.x + defaultXRel * GetScreenWidth();
-        textBox.y = gGameState.dialogPos.y + defaultYRel * GetScreenHeight();
+        textBox.x = gGameState.dialogPos.x + textRel.x * GetScreenWidth();
+        textBox.y = gGameState.dialogPos.y + textRel.y * GetScreenHeight();
     } else {
-        textBox.x = defaultXRel * GetScreenWidth();
-        textBox.y = defaultYRel * GetScreenHeight();
+        textBox.x = textRel.x * GetScreenWidth();
+        textBox.y = textRel.y * GetScreenHeight();
     }
-    textBox.width = defaultWidthRel * GetScreenWidth();
-    textBox.height = defaultHeightRel * GetScreenHeight();
+    textBox.width = textRel.width * GetScreenWidth();
+    textBox.height = textRel.height * GetScreenHeight();
     int textPadding = 10;
     Rectangle innerBox = { textBox.x + textPadding, textBox.y + textPadding,
                            textBox.width - 2 * textPadding, textBox.height - 2 * textPadding };
@@ -703,7 +777,7 @@ void updateText() {
     }
 }
 
-void invAssets(void) {
+static inline void invAssets(void) {
     while (size(&backgroundLRU) > CACHE_SIZE) {
         char *key = (char *)last(&backgroundLRU);
         Texture2D *tex = get(&backgroundCache, key);
@@ -734,8 +808,27 @@ void invAssets(void) {
 }
 
 int main(void) {
-    InitWindow(screenWidth, screenHeight, "VN Engine");
+    gGameState.screenWidth = 1024;
+    gGameState.screenHeight = 768;
+    gStyle = (OptionsStyle){
+        .font = 20,
+        .padding = 5,
+        .spacing = 10,
+        .buttonHeight = 30,  // computed as font + 2*padding
+        .center = false,
+        .baseRect = { (float)gGameState.screenWidth/2 - 200, (float)gGameState.screenHeight/2 - 100, 400, 250 },
+    };
+
+    Rectangle textRel = {
+        .x = 60.0f / 800,
+        .y = 330.0f / 450,
+        .width = 685.0f / 800,
+        .height = 100.0f / 450,
+    };
+
+    InitWindow(gGameState.screenWidth, gGameState.screenHeight, "VN Engine");
     InitAudioDevice();
+    masterVolume = GetMasterVolume();
     Shader spriteOutline = LoadShader(0, TextFormat("src/outline-%i.fs", GLSL_VERSION));
 
     gL = luaL_newstate();
@@ -777,14 +870,19 @@ int main(void) {
                     chooseModule(&scenes);
                 } break;
                 case LOAD: {} break;
-                case SETTINGS: {} break;
+                case SETTINGS: {
+                    settingsMenu();
+                } break;
                 case QUIT: {
                     gQuit = true;
                 } break;
             } break;
         } break;
         case GAME: {
-            if (gGameState.hasMusic) UpdateMusicStream(gGameState.music);
+            if (gGameState.hasMusic) {
+                SetMusicVolume(gGameState.music, masterVolume*musicVolume);
+                UpdateMusicStream(gGameState.music);
+            }
     
             if (gGameState.hasDialog && gGameState.choiceCount == 0) {
                 if (lua_status(gSceneThread) == LUA_YIELD && ( forward || IsKeyPressed(KEY_SPACE))) {
@@ -802,15 +900,16 @@ int main(void) {
                 updateBackground(&spriteOutline);
             }
             if (gGameState.hasDialog) {
-                updateText();
+                updateText(textRel);
             }
             if (gGameState.choiceCount > 0) {
                 chooseScene();
             }
             int btnWidth = 40, btnHeight = 30;
-            Rectangle pauseBut = { screenWidth - btnWidth - 10, 10, btnWidth, btnHeight };
+            Rectangle pauseBut = { gGameState.screenWidth - btnWidth - 10, 10, btnWidth, btnHeight };
             if (IsKeyPressed(KEY_P) || GuiButton(pauseBut, "#132#")) gGameState.isPaused = true;
             if (gGameState.isPaused) pauseMenu();
+            if (gGameState.settings) settingsMenu();
             } break;
             default: break;
         } 
