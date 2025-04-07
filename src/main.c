@@ -4,8 +4,14 @@
 #include <string.h>
 #include <strings.h>
 #include "raylib.h"
+
 #define RAYGUI_IMPLEMENTATION
-#include "../external/raygui.h"
+#include "raygui.h"
+#undef RAYGUI_IMPLEMENTATION
+
+#define GUI_WINDOW_FILE_DIALOG_IMPLEMENTATION
+#include "gui_window_file_dialog.h"
+
 #include "../external/cc.h"
 #include "boundedtext.h"
 #include "../build/lua/lua.h"
@@ -71,27 +77,14 @@ typedef struct {
 } GameState;
 
 static GameState gGameState = {
-    .spriteCount = 0,
-    .settings = false,
-    .isPaused = false,
-    .hasMusic = false,
-    .hasBackground = false,
-    .dialogText = "",
-    .dialogName = "",
-    .textColor = WHITE,
-    .dialogNameColor = WHITE,
-    .hasDialog = false,
-    .dialogHasPos = false,
-    .choiceCount = 0,
     .moduleFolder = "",
-    .bgfile = "",
-    .musicfile = "",
-    .spritefiles = ""
 };
 
 vec(GameState) gameStateStack;
 static lua_State *gL = NULL;
 static lua_State *gSceneThread = NULL;
+
+static char gUserData[BUFFER_SIZE] = {0};
 
 enum {
     MODULE,
@@ -122,7 +115,7 @@ static void updateLRU(list(char *) *lruList, const char *key) {
     insert(lruList, first(lruList), (char *)key);
 }
 
-void cachePrefetched(const char *funcName, const char *path) {
+static inline void cachePrefetched(const char *funcName, const char *path) {
     if (strcmp(funcName, "load_background") == 0) {
         Texture2D *cached = get(&backgroundCache, path);
         if (!cached) {
@@ -150,7 +143,7 @@ void cachePrefetched(const char *funcName, const char *path) {
     }
 }
 
-void prefetchAssets(lua_State *L) {
+static inline void prefetchAssets(lua_State *L) {
     if (!L) return;
     lua_Debug ar;
     int level = 0;
@@ -227,6 +220,14 @@ static int l_pop_state(lua_State *L) {
 
 static int l_module_init(lua_State *L) {
     gGameState.moduleFolder = luaL_checkstring(L, 1);
+    return 0;
+}
+
+static int l_set_save_data(lua_State *L) {
+    const char *data = luaL_checkstring(L, 1);
+    strncpy(gUserData, data, BUFFER_SIZE - 1);
+    gUserData[BUFFER_SIZE - 1] = '\0';
+    TraceLog(LOG_INFO, "User save data set: %s", gUserData);
     return 0;
 }
 
@@ -450,6 +451,12 @@ static int l_set_choices(lua_State *L) {
     return lua_yield(L, 0);
 }
 
+static int l_next_scene(lua_State *L) {
+    const char *file = luaL_checkstring(L, 1);
+    loadScene(file);
+    return 0;
+}
+
 static int l_quit(lua_State *L) {
     (void)L;
     gQuit = true;
@@ -653,15 +660,9 @@ static void settingsMenu(void) {
 static inline void pauseMenuSelect(int index, void* data) {
     (void)data;    
     switch (index) {
-        case 0: {
-            gGameState.isPaused = false;
-        } break;
-        case 1: {
-            menu = SAVE;
-        } break;
-        case 2: {
-            menu = LOAD;
-        } break;
+        case 0: gGameState.isPaused = false; break;
+        case 1: menu = SAVE; break;
+        case 2: menu = LOAD; break;
         case 3: {
             menu = SETTINGS;
             gGameState.isPaused = false;
@@ -690,9 +691,7 @@ static inline void pauseMenuSelect(int index, void* data) {
             menu = NONE;
             screen = TITLE;
         } break;
-        case 5: {
-            gQuit = true;
-        } break;
+        case 5: gQuit = true; break;
         default: break;
     }
 }
@@ -744,7 +743,6 @@ static inline void updateBackground(Shader* spriteOutline) {
     }
 }
 
-// Proportions for text box
 bool forward = false;
 static inline void updateText(Rectangle textRel) {
     Rectangle textBox;
@@ -806,6 +804,21 @@ static inline void invAssets(void) {
         TraceLog(LOG_INFO, "Evicted sprite: %s", key);
     }
 }
+static void loadSave(void) {
+    if (!DirectoryExists("save")) MakeDirectory("save");
+    GuiWindowFileDialogState w = InitGuiWindowFileDialog("save");
+    static char data[BUFFER_SIZE] = {0};
+    
+    if (w.SelectFilePressed) {
+        if (IsFileExtension(w.fileNameText, ".lua")) {
+            strcpy(data, LoadFileText(w.fileNameText));
+            sscanf(data, "%s\n%s", gCurrentScene, saveData);
+        }
+        w.SelectFilePressed = false;
+    }
+}
+
+static void save() {}
 
 int main(void) {
     gGameState.screenWidth = 1024;
@@ -842,9 +855,11 @@ int main(void) {
     lua_register(gL, "show_text", l_show_text);
     lua_register(gL, "clear_text", l_clear_text);
     lua_register(gL, "set_choices", l_set_choices);
+    lua_register(gL, "next_scene", l_next_scene);
     lua_register(gL, "quit", l_quit);
     lua_register(gL, "module_init", l_module_init);
     lua_register(gL, "pop_state", l_pop_state);
+    lua_register(gL, "set_save_data", l_set_save_data);
 
     FilePathList scenes = LoadDirectoryFilesEx("mods", ".lua", 0);
     init(&backgroundCache);
@@ -863,19 +878,13 @@ int main(void) {
         switch (screen) {
         case TITLE: {
             switch (menu) {
-                case NONE: {
-                    mainMenu();
+                case NONE: mainMenu(); break;
+                case MODULE: chooseModule(&scenes); break;
+                case LOAD: {
+                    
                 } break;
-                case MODULE: {
-                    chooseModule(&scenes);
-                } break;
-                case LOAD: {} break;
-                case SETTINGS: {
-                    settingsMenu();
-                } break;
-                case QUIT: {
-                    gQuit = true;
-                } break;
+                case SETTINGS: settingsMenu(); break;
+                case QUIT: gQuit = true; break;
             } break;
         } break;
         case GAME: {

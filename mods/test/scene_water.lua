@@ -4,6 +4,6 @@ show_text(Narrator, "You look around.")
 load_sprite(fairy.file, fairy.x, fairy.y, fairy.name )
 show_text(fairy, "A gentle fairy appears by a sparkling stream.")
 set_choices({
-    { text = "Talk to the fairy", scene = "scene_fairy.lua" },
+    { text = "Talk to the fairy", scene = "scene_fairy_save.lua" },
     { text = "Return to the forest", scene = "clearing.lua" }
 })
