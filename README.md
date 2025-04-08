@@ -34,3 +34,10 @@ character = { string name, table color }
 To see an example look inside mods. It is recommeded to create a new folder in which to store the additional scene files to not clutter the scenes folder and to allow for easier differentiation between projects, use module_init for applying a prefix.
 
 DISCLAIMER: I make no claims of ownership over any of the binary assets of included libraries under the externals directory, furthermore their functioning is not at the discretions of their creators and may behave differently then expected due to changes I have made to them.
+
+TODO:
+use PATH_SEPERATOR macro for paths e.g.
+
+```C
+strcpy(fileNameToLoad, TextFormat("%s" PATH_SEPERATOR "%s", fileDialogState.dirPathText, fileDialogState.fileNameText));
+```

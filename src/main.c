@@ -84,7 +84,7 @@ vec(GameState) gameStateStack;
 static lua_State *gL = NULL;
 static lua_State *gSceneThread = NULL;
 
-static char gUserData[BUFFER_SIZE] = {0};
+static char gUserData[4096] = {0};
 
 enum {
     MODULE,
@@ -105,6 +105,24 @@ enum {
 static char gCurrentScene[BUFFER_SIZE] = "";
 static char gLastScene[BUFFER_SIZE] = "";
 
+static void cleanCache() {
+    if (gGameState.hasBackground) UnloadTexture(gGameState.background);
+    gGameState.hasBackground = false;
+    for (int i = 0; i < gGameState.spriteCount; i++)
+        UnloadTexture(gGameState.sprites[i].texture);
+    if (gGameState.hasMusic) {
+        StopMusicStream(gGameState.music);
+        UnloadMusicStream(gGameState.music);
+    }
+    cleanup(&backgroundCache);
+    cleanup(&musicCache);
+    cleanup(&spriteCache);
+    cleanup(&gameStateStack);
+    cleanup(&backgroundLRU);
+    cleanup(&musicLRU);
+    cleanup(&spriteLRU);
+}
+
 static void updateLRU(list(char *) *lruList, const char *key) {
     for_each(lruList, el) {
         if (strcmp(*el, key) == 0) {
@@ -115,7 +133,7 @@ static void updateLRU(list(char *) *lruList, const char *key) {
     insert(lruList, first(lruList), (char *)key);
 }
 
-static inline void cachePrefetched(const char *funcName, const char *path) {
+static inline void cachePrefetched(const char *funcName, char *path) {
     if (strcmp(funcName, "load_background") == 0) {
         Texture2D *cached = get(&backgroundCache, path);
         if (!cached) {
@@ -148,16 +166,27 @@ static void assetHook(lua_State *L, lua_Debug *ar) {
         return;
     if (lua_getinfo(L, "nS", ar) == 0)
         return;
-    if (ar->name && 
-       (strcmp(ar->name, "play_music") == 0 ||
-        strcmp(ar->name, "load_background") == 0 ||
-        strcmp(ar->name, "load_sprite") == 0)) {
+    if (ar->name) {
+        char folder[10];
+        bool flag = true;
+        if (strcmp(ar->name, "play_music") == 0) {
+            strncpy(folder, "music", 5);
+            flag = false;
+        }
+        if (strcmp(ar->name, "load_background") == 0 || strcmp(ar->name, "load_sprite") == 0) {
+            strncpy(folder, "images", 6);
+            flag = false;
+        }
+        if (flag) return;
         int i = 1;
         const char *localName;
         while ((localName = lua_getlocal(L, ar, i)) != NULL) {
             if (lua_isstring(L, -1)) {
-                const char *assetPath = lua_tostring(L, -1);
-                cachePrefetched(ar->name, assetPath);
+                char *assetPath = (char*)lua_tostring(L, -1);
+                char path[BUFFER_SIZE];
+                sprintf(path, "mods/%s/%s/%s", gGameState.moduleFolder, folder, assetPath);
+                printf("assetPath: %s\n", path);
+                cachePrefetched(ar->name, path);
             }
             lua_pop(L, 1); // remove the local variable value from the stack
             i++;
@@ -165,7 +194,66 @@ static void assetHook(lua_State *L, lua_Debug *ar) {
     }
 }
 
+static void serialize_game_state(char *buffer, size_t maxSize) {
+    size_t offset = 0;
+    offset += snprintf(buffer + offset, maxSize - offset, "{");
+    offset += snprintf(buffer + offset, maxSize - offset, "screenWidth=%d,", gGameState.screenWidth);
+    offset += snprintf(buffer + offset, maxSize - offset, "screenHeight=%d,", gGameState.screenHeight);
+    offset += snprintf(buffer + offset, maxSize - offset, "settings=%s,", gGameState.settings ? "true" : "false");
+    offset += snprintf(buffer + offset, maxSize - offset, "isPaused=%s,", gGameState.isPaused ? "true" : "false");
+    offset += snprintf(buffer + offset, maxSize - offset, "hasMusic=%s,", gGameState.hasMusic ? "true" : "false");
+    offset += snprintf(buffer + offset, maxSize - offset, "hasBackground=%s,", gGameState.hasBackground ? "true" : "false");
+    offset += snprintf(buffer + offset, maxSize - offset, "dialogText=[[%s]],", gGameState.dialogText);
+    offset += snprintf(buffer + offset, maxSize - offset, "dialogName=[[%s]],", gGameState.dialogName);
+    offset += snprintf(buffer + offset, maxSize - offset, "textColor={r=%d,g=%d,b=%d,a=%d},", 
+                         gGameState.textColor.r, gGameState.textColor.g,
+                         gGameState.textColor.b, gGameState.textColor.a);
+    offset += snprintf(buffer + offset, maxSize - offset, "dialogNameColor={r=%d,g=%d,b=%d,a=%d},", 
+                         gGameState.dialogNameColor.r, gGameState.dialogNameColor.g,
+                         gGameState.dialogNameColor.b, gGameState.dialogNameColor.a);
+    offset += snprintf(buffer + offset, maxSize - offset, "hasDialog=%s,", gGameState.hasDialog ? "true" : "false");
+    offset += snprintf(buffer + offset, maxSize - offset, "dialogPos={x=%f,y=%f},", gGameState.dialogPos.x, gGameState.dialogPos.y);
+    offset += snprintf(buffer + offset, maxSize - offset, "dialogHasPos=%s,", gGameState.dialogHasPos ? "true" : "false");
+    // Serialize choices array.
+    offset += snprintf(buffer + offset, maxSize - offset, "choices={");
+    for (int i = 0; i < gGameState.choiceCount; i++) {
+        offset += snprintf(buffer + offset, maxSize - offset, "{text=[[%s]],scene=[[%s]]}",
+                           gGameState.choices[i].text, gGameState.choices[i].scene);
+        if (i < gGameState.choiceCount - 1) offset += snprintf(buffer + offset, maxSize - offset, ",");
+    }
+    offset += snprintf(buffer + offset, maxSize - offset, "},choiceCount=%d,", gGameState.choiceCount);
+    offset += snprintf(buffer + offset, maxSize - offset, "moduleFolder=[[%s]],", gGameState.moduleFolder);
+    offset += snprintf(buffer + offset, maxSize - offset, "bgfile=[[%s]],", gGameState.bgfile);
+    offset += snprintf(buffer + offset, maxSize - offset, "musicfile=[[%s]],", gGameState.musicfile);
+    // Serialize spritefiles array.
+    offset += snprintf(buffer + offset, maxSize - offset, "spritefiles={");
+    for (int i = 0; i < gGameState.spriteCount; i++) {
+        offset += snprintf(buffer + offset, maxSize - offset, "[[%s]]", gGameState.spritefiles[i]);
+        if (i < gGameState.spriteCount - 1) offset += snprintf(buffer + offset, maxSize - offset, ",");
+    }
+    offset += snprintf(buffer + offset, maxSize - offset, "}");
+    offset += snprintf(buffer + offset, maxSize - offset, "}");
+}
+
+static void save() {
+    char saveDir[PATH_BUFFER_SIZE] = "saves";
+    if (!DirectoryExists(saveDir))
+        MakeDirectory(saveDir);
+    char savePath[PATH_BUFFER_SIZE];
+    snprintf(savePath, PATH_BUFFER_SIZE, "%s/%s.dat", saveDir, gCurrentScene);
+
+    char globalState[8192] = {0};
+    serialize_game_state(globalState, sizeof(globalState));
+
+    char content[16384] = {0};
+    // Save three parts: current scene, global state, and user save data.
+    snprintf(content, sizeof(content), "%s\n%s\n%s", gCurrentScene, globalState, gUserData);
+    SaveFileText(savePath, content);
+    TraceLog(LOG_INFO, "Game saved to: %s", savePath);
+}
+
 static void loadScene(const char *sceneFile) {
+    save();
     strncpy(gLastScene, gCurrentScene, BUFFER_SIZE - 1);
     gLastScene[BUFFER_SIZE - 1] = '\0';
     strncpy(gCurrentScene, sceneFile, BUFFER_SIZE - 1);
@@ -215,6 +303,140 @@ static void rollbackScene(void) {
     TraceLog(LOG_INFO, "Rolled back and restarted scene: %s", gCurrentScene);
 }
 
+// TODO: make iterable and check table recursion
+static void serialize_table(lua_State *L, int index, char *buffer, size_t *offset, size_t maxSize) {
+    size_t n = *offset;
+    if(n < maxSize - 1) buffer[n++] = '{';
+    int first = 1;
+    lua_pushnil(L);  // first key
+    while (lua_next(L, index)) {
+        if (!first && n < maxSize - 1)
+            buffer[n++] = ',';
+        first = 0;
+        // Serialize key
+        if (lua_type(L, -2) == LUA_TSTRING) {
+            const char *key = lua_tostring(L, -2);
+            n += snprintf(buffer + n, maxSize - n, "[\"%s\"]=", key);
+        } else if (lua_type(L, -2) == LUA_TNUMBER) {
+            double key = lua_tonumber(L, -2);
+            n += snprintf(buffer + n, maxSize - n, "[%g]=", key);
+        }
+        // Serialize value
+        int t = lua_type(L, -1);
+        if (t == LUA_TSTRING) {
+            const char *val = lua_tostring(L, -1);
+            n += snprintf(buffer + n, maxSize - n, "\"%s\"", val);
+        } else if (t == LUA_TNUMBER) {
+            double val = lua_tonumber(L, -1);
+            n += snprintf(buffer + n, maxSize - n, "%g", val);
+        } else if (t == LUA_TBOOLEAN) {
+            n += snprintf(buffer + n, maxSize - n, "%s", lua_toboolean(L, -1) ? "true" : "false");
+        } else if (t == LUA_TTABLE) {
+            int absIndex = lua_gettop(L);
+            serialize_table(L, absIndex, buffer, &n, maxSize);
+        } else {
+            n += snprintf(buffer + n, maxSize - n, "nil");
+        }
+        lua_pop(L, 1); // pop the value, keep key for next iteration
+    }
+    if(n < maxSize - 1)
+        buffer[n++] = '}';
+    buffer[n] = '\0';
+    *offset = n;
+}
+
+static void restore_game_state(lua_State *L) {
+    lua_getglobal(L, "global_state");
+    if (lua_istable(L, -1)) {
+        lua_getfield(L, -1, "bgfile");
+        if (lua_isstring(L, -1)) {
+            strncpy(gGameState.bgfile, lua_tostring(L, -1), PATH_BUFFER_SIZE - 1);
+            gGameState.bgfile[PATH_BUFFER_SIZE - 1] = '\0';
+            gGameState.background = LoadTexture(gGameState.bgfile);
+            gGameState.hasBackground = true;
+        }
+        lua_pop(L,1);
+        lua_getfield(L, -1, "musicfile");
+        if (lua_isstring(L, -1)) {
+            strncpy(gGameState.musicfile, lua_tostring(L, -1), PATH_BUFFER_SIZE - 1);
+            gGameState.musicfile[PATH_BUFFER_SIZE - 1] = '\0';
+            gGameState.music = LoadMusicStream(gGameState.musicfile);
+            gGameState.hasMusic = true;
+        }
+        lua_pop(L,1);
+        lua_getfield(L, -1, "spritefiles");
+        if (lua_istable(L, -1)) {
+            int count = 0;
+            lua_pushnil(L);
+            while (lua_next(L, -2) && count < CACHE_SIZE) {
+                if (lua_isstring(L, -1)) {
+                    strncpy(gGameState.spritefiles[count], lua_tostring(L, -1), PATH_BUFFER_SIZE - 1);
+                    gGameState.spritefiles[count][PATH_BUFFER_SIZE - 1] = '\0';
+                    gGameState.sprites[count].texture = LoadTexture(gGameState.spritefiles[count]);
+                    gGameState.sprites[count].pos = (Vector2){0, 0};
+                    gGameState.sprites[count].hasID = false;
+                    count++;
+                }
+                lua_pop(L,1);
+            }
+            gGameState.spriteCount = count;
+        }
+        lua_pop(L,1);
+    }
+    lua_pop(L,1);
+}
+
+GuiWindowFileDialogState gFileDialog = {0};
+static void loadSave(void) {
+    GuiUnlock();
+    GuiWindowFileDialog(&gFileDialog);
+    static char data[16384] = {0};
+    char path[PATH_BUFFER_SIZE];
+
+    if (gFileDialog.SelectFilePressed) {
+        if (IsFileExtension(gFileDialog.fileNameText, ".dat")) {
+            TraceLog(LOG_INFO, "Loaded save: %s", gFileDialog.fileNameText);
+            snprintf(path, PATH_BUFFER_SIZE, "saves/%s", gFileDialog.fileNameText);
+            const char *fileText = LoadFileText(path);
+            if (fileText) {
+                strncpy(data, fileText, sizeof(data) - 1);
+                data[sizeof(data) - 1] = '\0';
+                // Split into three parts: scene, global state, user data.
+                char *line1 = data;
+                char *line2 = strchr(data, '\n');
+                if (line2) {
+                    *line2 = '\0';
+                    line2++;
+                    char *line3 = strchr(line2, '\n');
+                    if (line3) {
+                        *line3 = '\0';
+                        line3++;
+                        strncpy(gCurrentScene, line1, BUFFER_SIZE - 1);
+                        gCurrentScene[BUFFER_SIZE - 1] = '\0';
+                        if (luaL_loadstring(gL, line2) == LUA_OK) {
+                            if (lua_pcall(gL, 0, 1, 0) == LUA_OK) {
+                                lua_setglobal(gL, "global_state");
+                                restore_game_state(gL);
+                            } else {
+                                TraceLog(LOG_ERROR, "Error executing global state chunk: %s", lua_tostring(gL, -1));
+                            }
+                        } else {
+                            TraceLog(LOG_ERROR, "Error loading global state chunk: %s", lua_tostring(gL, -1));
+                        }
+                        strncpy(gUserData, line3, sizeof(gUserData)-1);
+                        gUserData[sizeof(gUserData)-1] = '\0';
+                    }
+                }
+            }
+            gFileDialog.SelectFilePressed = false;
+            gFileDialog.windowActive = false;
+            menu = NONE;
+            return;
+        }
+        gFileDialog.SelectFilePressed = false;
+    }
+}
+
 /* --- Lua API --- */
 static int l_pop_state(lua_State *L) {
     rollbackScene();
@@ -226,10 +448,21 @@ static int l_module_init(lua_State *L) {
     return 0;
 }
 
-static int l_set_save_data(lua_State *L) {
-    const char *data = luaL_checkstring(L, 1);
-    strncpy(gUserData, data, BUFFER_SIZE - 1);
-    gUserData[BUFFER_SIZE - 1] = '\0';
+ static int l_set_save_data(lua_State *L) {
+    if (lua_istable(L, 1)) {
+        char buffer[4096] = {0};
+        size_t offset = 0;
+        // Ensure the table is at a positive index.
+        serialize_table(L, 1, buffer, &offset, sizeof(buffer));
+        strncpy(gUserData, buffer, sizeof(gUserData) - 1);
+        gUserData[sizeof(gUserData) - 1] = '\0';
+    } else if (lua_isstring(L, 1)) {
+        const char *data = lua_tostring(L, 1);
+        strncpy(gUserData, data, sizeof(gUserData) - 1);
+        gUserData[sizeof(gUserData) - 1] = '\0';
+    } else {
+        return luaL_error(L, "Unsupported type for save data");
+    }
     TraceLog(LOG_INFO, "User save data set: %s", gUserData);
     return 0;
 }
@@ -347,7 +580,7 @@ static int l_play_sound(lua_State *L) {
     char path[PATH_BUFFER_SIZE];
     snprintf(path, PATH_BUFFER_SIZE, "mods/%s/music/%s", gGameState.moduleFolder, file);
     Sound s = LoadSound(path);
-    SetSoundVolume(s, soundVolume);
+    SetSoundVolume(s, soundVolume*masterVolume);
     PlaySound(s);
     TraceLog(LOG_INFO, "Played sound: %s", file);
     return 0;
@@ -586,12 +819,12 @@ static void settingsMenu(void) {
     int labelWidth = MeasureText("Master Volume", Style.font);
     DrawText("Master Volume", soundInnerX, soundInnerY, Style.font, WHITE);
     Rectangle sliderRect = { soundInnerX + labelWidth + 10, soundInnerY, (soundGroupRect.width - 20) - fontAlign - (labelWidth + 10), sliderHeight };
-    GuiSlider(sliderRect, NULL, TextFormat("%0.2f", masterVolume), &masterVolume, 0.0f, 1.0f);
+    if (GuiSlider(sliderRect, NULL, TextFormat("%0.2f", masterVolume), &masterVolume, 0.0f, 1.0f)) SetMusicVolume(gGameState.music, masterVolume*musicVolume); 
     soundInnerY += verticalSpacing;
     
     DrawText("Music Volume", soundInnerX, soundInnerY, Style.font, WHITE);
     sliderRect = (Rectangle){ soundInnerX + labelWidth + 10, soundInnerY, (soundGroupRect.width - 20) - fontAlign - (labelWidth + 10), sliderHeight };
-    GuiSlider(sliderRect, NULL, TextFormat("%0.2f", musicVolume), &musicVolume, 0.0f, 1.0f);
+    if (GuiSlider(sliderRect, NULL, TextFormat("%0.2f", musicVolume), &musicVolume, 0.0f, 1.0f)) SetMusicVolume(gGameState.music, masterVolume*musicVolume);
     soundInnerY += verticalSpacing;
     
     DrawText("SFX Volume", soundInnerX, soundInnerY, Style.font, WHITE);
@@ -631,7 +864,19 @@ static void settingsMenu(void) {
 
     GuiUnlock();
 
-    graphicsInnerY += verticalSpacing;
+    graphicsInnerY += 2*verticalSpacing; //It is stacked based, so the bottom one goes first
+    DrawText("Refresh Rate", graphicsInnerX, graphicsInnerY, Style.font, WHITE);
+    static char* refreshRateList = "60Hz;75Hz;120Hz;144Hz;240Hz";
+    Rectangle refreshRect = { graphicsInnerX + labelWidth + 10, graphicsInnerY, (graphicsGroupRect.width - 20) - (labelWidth + 10), 20 };
+    if (GuiDropdownBox(refreshRect, refreshRateList, &currentRefresh, reditMode)) {
+        reditMode = !reditMode;
+        const char *refreshOptions[] = { "60Hz", "75Hz", "120Hz", "144Hz", "240Hz" };
+        int newRate;
+        sscanf(refreshOptions[currentRefresh], "%d", &newRate);
+        SetTargetFPS(newRate);
+    }
+
+    graphicsInnerY -= verticalSpacing;
     DrawText("Resolution", graphicsInnerX, graphicsInnerY, Style.font, WHITE);
     static char* resList = "640x480;800x600;1024x768;1280x720;1920x1080";
     Rectangle resRect = { graphicsInnerX + labelWidth + 10, graphicsInnerY, (graphicsGroupRect.width - 20) - (labelWidth + 10), 20 };
@@ -646,18 +891,6 @@ static void settingsMenu(void) {
         gGameState.screenHeight = newHeight;
         gStyle.baseRect = (Rectangle){ (float)newWidth/2 - 200, (float)newHeight/2 - 100, 400, 250 };
     }
-    
-    graphicsInnerY += verticalSpacing;
-    DrawText("Refresh Rate", graphicsInnerX, graphicsInnerY, Style.font, WHITE);
-    static char* refreshRateList = "60Hz;75Hz;120Hz;144Hz;240Hz";
-    Rectangle refreshRect = { graphicsInnerX + labelWidth + 10, graphicsInnerY, (graphicsGroupRect.width - 20) - (labelWidth + 10), 20 };
-    if (GuiDropdownBox(refreshRect, refreshRateList, &currentRefresh, reditMode)) {
-        reditMode = !reditMode;
-        const char *refreshOptions[] = { "60Hz", "75Hz", "120Hz", "144Hz", "240Hz" };
-        int newRate;
-        sscanf(refreshOptions[currentRefresh], "%d", &newRate);
-        SetTargetFPS(newRate);
-    }
 }
 
 static inline void pauseMenuSelect(int index, void* data) {
@@ -665,29 +898,17 @@ static inline void pauseMenuSelect(int index, void* data) {
     switch (index) {
         case 0: gGameState.isPaused = false; break;
         case 1: menu = SAVE; break;
-        case 2: menu = LOAD; break;
+        case 2: {
+            menu = LOAD;
+            gFileDialog.windowActive = true;
+        } break;
         case 3: {
             menu = SETTINGS;
             gGameState.isPaused = false;
             gGameState.settings = true;
         } break;
         case 4: {
-            if (gGameState.hasBackground) UnloadTexture(gGameState.background);
-            gGameState.hasBackground = false;
-            for (int i = 0; i < gGameState.spriteCount; i++)
-                UnloadTexture(gGameState.sprites[i].texture);
-            if (gGameState.hasMusic) {
-                StopMusicStream(gGameState.music);
-                UnloadMusicStream(gGameState.music);
-            }
-            cleanup(&backgroundCache);
-            cleanup(&musicCache);
-            cleanup(&spriteCache);
-            cleanup(&gameStateStack);
-            cleanup(&backgroundLRU);
-            cleanup(&musicLRU);
-            cleanup(&spriteLRU);
-
+            cleanCache();
             gGameState.hasDialog = false;
             gGameState.moduleFolder = "";
             gGameState.isPaused = false;
@@ -700,6 +921,7 @@ static inline void pauseMenuSelect(int index, void* data) {
 }
 
 void pauseMenu() {
+    if (gFileDialog.windowActive) GuiLock();
     DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Fade(GRAY, 0.8f));
     int shortCut[] = { KEY_R, KEY_G, KEY_L, KEY_S, KEY_M, KEY_Q }; 
     char* choices[] = { "Resume", "Save Game", "Load Game", "Settings", "Main Menu", "Quit" };
@@ -707,6 +929,7 @@ void pauseMenu() {
     OptionsStyle Style = gStyle;
     GuiGroupBox((Rectangle){ Style.baseRect.x + Style.baseRect.width/4, Style.baseRect.y - 10, Style.baseRect.width/2, Style.baseRect.height }, "Paused");
     genericChoose((void*)choices, shortCut, count, getMenuItems, pauseMenuSelect, Style);
+    loadSave();
 }
 
 static inline void updateBackground(Shader* spriteOutline) {
@@ -807,22 +1030,6 @@ static inline void invAssets(void) {
         TraceLog(LOG_INFO, "Evicted sprite: %s", key);
     }
 }
-static void loadSave(void) {
-    if (!DirectoryExists("save")) MakeDirectory("save");
-    GuiWindowFileDialogState w = InitGuiWindowFileDialog("save");
-    static char data[BUFFER_SIZE] = {0};
-    
-    if (w.SelectFilePressed) {
-        if (IsFileExtension(w.fileNameText, ".lua")) {
-            strcpy(data, LoadFileText(w.fileNameText));
-            // sscanf(data, "%s\n%s", gCurrentScene, saveData);
-        }
-        w.SelectFilePressed = false;
-    }
-}
-
-static void save() {}
-
 int main(void) {
     gGameState.screenWidth = 1024;
     gGameState.screenHeight = 768;
@@ -873,6 +1080,7 @@ int main(void) {
     init(&musicLRU);
     init(&spriteLRU);
 
+    gFileDialog = InitGuiWindowFileDialog("saves");
     SetTargetFPS(60);
     while (!gQuit) {
         if (WindowShouldClose()) gQuit = true;
@@ -884,7 +1092,8 @@ int main(void) {
                 case NONE: mainMenu(); break;
                 case MODULE: chooseModule(&scenes); break;
                 case LOAD: {
-                    
+                    gFileDialog.windowActive = true;
+                    loadSave();
                 } break;
                 case SETTINGS: settingsMenu(); break;
                 case QUIT: gQuit = true; break;
@@ -892,7 +1101,6 @@ int main(void) {
         } break;
         case GAME: {
             if (gGameState.hasMusic) {
-                SetMusicVolume(gGameState.music, masterVolume*musicVolume);
                 UpdateMusicStream(gGameState.music);
             }
     
@@ -915,7 +1123,9 @@ int main(void) {
                 updateText(textRel);
             }
             if (gGameState.choiceCount > 0) {
+                if (gGameState.isPaused) GuiLock();
                 chooseScene();
+                if (gGameState.isPaused) GuiUnlock();
             }
             int btnWidth = 40, btnHeight = 30;
             Rectangle pauseBut = { gGameState.screenWidth - btnWidth - 10, 10, btnWidth, btnHeight };
@@ -930,13 +1140,7 @@ int main(void) {
     }
 
     UnloadDirectoryFiles(scenes);
-    if (gGameState.hasBackground) UnloadTexture(gGameState.background);
-    for (int i = 0; i < gGameState.spriteCount; i++)
-        UnloadTexture(gGameState.sprites[i].texture);
-    if (gGameState.hasMusic) {
-        StopMusicStream(gGameState.music);
-        UnloadMusicStream(gGameState.music);
-    }
+    cleanCache();
     lua_close(gL);
     CloseAudioDevice();
     CloseWindow();
