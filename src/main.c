@@ -132,7 +132,7 @@ static inline void cachePrefetched(const char *funcName, const char *path) {
             insert(&spriteCache, key, tex);
             TraceLog(LOG_INFO, "Cached sprite: %s", path);
         }
-    } else if (strcmp(funcName, "load_music") == 0) {
+    } else if (strcmp(funcName, "play_music") == 0) {
         Music *cached = get(&musicCache, path);
         if (!cached) {
             Music music = LoadMusicStream(path);
@@ -143,28 +143,29 @@ static inline void cachePrefetched(const char *funcName, const char *path) {
     }
 }
 
-static inline void prefetchAssets(lua_State *L) {
-    if (!L) return;
-    lua_Debug ar;
-    int level = 0;
-    while (lua_getstack(L, level, &ar)) {
-        if (lua_getinfo(L, "nSl", &ar) == 0)
-            break;
-        if (ar.name && (strcmp(ar.name, "load_background") == 0 ||
-                        strcmp(ar.name, "load_sprite") == 0 ||
-                        strcmp(ar.name, "load_music") == 0)) {
-            if (lua_getlocal(L, &ar, 1) != NULL && lua_isstring(L, -1)) {
+static void assetHook(lua_State *L, lua_Debug *ar) {
+    if (ar->event != LUA_HOOKCALL)
+        return;
+    if (lua_getinfo(L, "nS", ar) == 0)
+        return;
+    if (ar->name && 
+       (strcmp(ar->name, "play_music") == 0 ||
+        strcmp(ar->name, "load_background") == 0 ||
+        strcmp(ar->name, "load_sprite") == 0)) {
+        int i = 1;
+        const char *localName;
+        while ((localName = lua_getlocal(L, ar, i)) != NULL) {
+            if (lua_isstring(L, -1)) {
                 const char *assetPath = lua_tostring(L, -1);
-                cachePrefetched(ar.name, assetPath);
+                cachePrefetched(ar->name, assetPath);
             }
-            lua_pop(L, 1); // pop the local variable
+            lua_pop(L, 1); // remove the local variable value from the stack
+            i++;
         }
-        level++;
     }
 }
 
 static void loadScene(const char *sceneFile) {
-    prefetchAssets(gSceneThread);
     strncpy(gLastScene, gCurrentScene, BUFFER_SIZE - 1);
     gLastScene[BUFFER_SIZE - 1] = '\0';
     strncpy(gCurrentScene, sceneFile, BUFFER_SIZE - 1);
@@ -175,6 +176,8 @@ static void loadScene(const char *sceneFile) {
     char path[PATH_BUFFER_SIZE];
     snprintf(path, PATH_BUFFER_SIZE, "mods/%s/%s", gGameState.moduleFolder, sceneFile);
     gSceneThread = lua_newthread(gL);
+    lua_sethook(gSceneThread, assetHook, LUA_MASKCALL, 0);
+
     if (luaL_loadfile(gSceneThread, path) != LUA_OK) {
         const char *error = lua_tostring(gSceneThread, -1);
         fprintf(stderr, "Error loading scene: %s\n", error);
@@ -812,7 +815,7 @@ static void loadSave(void) {
     if (w.SelectFilePressed) {
         if (IsFileExtension(w.fileNameText, ".lua")) {
             strcpy(data, LoadFileText(w.fileNameText));
-            sscanf(data, "%s\n%s", gCurrentScene, saveData);
+            // sscanf(data, "%s\n%s", gCurrentScene, saveData);
         }
         w.SelectFilePressed = false;
     }
