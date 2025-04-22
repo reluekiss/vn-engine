@@ -7,7 +7,7 @@ ifeq ($(PLATFORM), linux)
     CFLAGS = -O3 -ggdb
     CNOOB = -ffunction-sections -fdata-sections -flto
     # LDFLAGS = -Wl,--gc-sections -s -Wl,-z,nodlopen -Wl,-z,noexecstack -Wl,-z,relro -Wl,-z,now -Wl,--as-needed -Wl,--no-copy-dt-needed-entries
-    LDFLAGS = 
+    # LDFLAGS = 
     LUA_CFLAGS = -DLUA_USE_POSIX
 else ifeq ($(PLATFORM), darwin)
     CC = cc
@@ -31,6 +31,7 @@ build/main: build $(OBJ)
 	make CFLAGS=$(LUA_CFLAGS) -C external/lua-5.4.7/src a
 	install -p -m 644 $(HEAD) build/lua
 	install -p external/lua-5.4.7/src/liblua.a build/lua
+	install -p external/serpent.lua build/lua/serpent.lua
 	$(CC) $(CFLAGS) $(CNOOB) src/main.c build/lua/liblua.a $(OBJ) -o build/main -Ibuild/lua $(LIBS) $(LDFLAGS)
 
 build/boundedtext.o: build src/boundedtext.c src/boundedtext.h

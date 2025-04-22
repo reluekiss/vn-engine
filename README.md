@@ -17,6 +17,7 @@ next_scene(string file) // Goes to next scene (ie allows you to have a stable sa
 quit() // Exit program.
 module_init(string folder) // Sets a prefix folder to access scenes from.
 pop_state() // pop off the gamestate stack to rollback to a previous state
+set_save_data() // set an arbitrary table to be saved when saving occurs
 ```
 
 And the following global variables:

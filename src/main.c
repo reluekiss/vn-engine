@@ -70,7 +70,7 @@ typedef struct {
     bool dialogHasPos;
     Choice choices[MAX_CHOICES];
     int choiceCount;
-    const char* moduleFolder;
+    char* moduleFolder;
     char bgfile[PATH_BUFFER_SIZE];
     char musicfile[PATH_BUFFER_SIZE];
     char spritefiles[CACHE_SIZE][PATH_BUFFER_SIZE];
@@ -194,66 +194,94 @@ static void assetHook(lua_State *L, lua_Debug *ar) {
     }
 }
 
-static void serialize_game_state(char *buffer, size_t maxSize) {
-    size_t offset = 0;
-    offset += snprintf(buffer + offset, maxSize - offset, "{");
-    offset += snprintf(buffer + offset, maxSize - offset, "screenWidth=%d,", gGameState.screenWidth);
-    offset += snprintf(buffer + offset, maxSize - offset, "screenHeight=%d,", gGameState.screenHeight);
-    offset += snprintf(buffer + offset, maxSize - offset, "settings=%s,", gGameState.settings ? "true" : "false");
-    offset += snprintf(buffer + offset, maxSize - offset, "isPaused=%s,", gGameState.isPaused ? "true" : "false");
-    offset += snprintf(buffer + offset, maxSize - offset, "hasMusic=%s,", gGameState.hasMusic ? "true" : "false");
-    offset += snprintf(buffer + offset, maxSize - offset, "hasBackground=%s,", gGameState.hasBackground ? "true" : "false");
-    offset += snprintf(buffer + offset, maxSize - offset, "dialogText=[[%s]],", gGameState.dialogText);
-    offset += snprintf(buffer + offset, maxSize - offset, "dialogName=[[%s]],", gGameState.dialogName);
-    offset += snprintf(buffer + offset, maxSize - offset, "textColor={r=%d,g=%d,b=%d,a=%d},", 
-                         gGameState.textColor.r, gGameState.textColor.g,
-                         gGameState.textColor.b, gGameState.textColor.a);
-    offset += snprintf(buffer + offset, maxSize - offset, "dialogNameColor={r=%d,g=%d,b=%d,a=%d},", 
-                         gGameState.dialogNameColor.r, gGameState.dialogNameColor.g,
-                         gGameState.dialogNameColor.b, gGameState.dialogNameColor.a);
-    offset += snprintf(buffer + offset, maxSize - offset, "hasDialog=%s,", gGameState.hasDialog ? "true" : "false");
-    offset += snprintf(buffer + offset, maxSize - offset, "dialogPos={x=%f,y=%f},", gGameState.dialogPos.x, gGameState.dialogPos.y);
-    offset += snprintf(buffer + offset, maxSize - offset, "dialogHasPos=%s,", gGameState.dialogHasPos ? "true" : "false");
-    // Serialize choices array.
-    offset += snprintf(buffer + offset, maxSize - offset, "choices={");
-    for (int i = 0; i < gGameState.choiceCount; i++) {
-        offset += snprintf(buffer + offset, maxSize - offset, "{text=[[%s]],scene=[[%s]]}",
-                           gGameState.choices[i].text, gGameState.choices[i].scene);
-        if (i < gGameState.choiceCount - 1) offset += snprintf(buffer + offset, maxSize - offset, ",");
-    }
-    offset += snprintf(buffer + offset, maxSize - offset, "},choiceCount=%d,", gGameState.choiceCount);
-    offset += snprintf(buffer + offset, maxSize - offset, "moduleFolder=[[%s]],", gGameState.moduleFolder);
-    offset += snprintf(buffer + offset, maxSize - offset, "bgfile=[[%s]],", gGameState.bgfile);
-    offset += snprintf(buffer + offset, maxSize - offset, "musicfile=[[%s]],", gGameState.musicfile);
-    // Serialize spritefiles array.
-    offset += snprintf(buffer + offset, maxSize - offset, "spritefiles={");
-    for (int i = 0; i < gGameState.spriteCount; i++) {
-        offset += snprintf(buffer + offset, maxSize - offset, "[[%s]]", gGameState.spritefiles[i]);
-        if (i < gGameState.spriteCount - 1) offset += snprintf(buffer + offset, maxSize - offset, ",");
-    }
-    offset += snprintf(buffer + offset, maxSize - offset, "}");
-    offset += snprintf(buffer + offset, maxSize - offset, "}");
-}
-
+static bool s_skipNextSave = true;
 static void save() {
     char saveDir[PATH_BUFFER_SIZE] = "saves";
-    if (!DirectoryExists(saveDir))
-        MakeDirectory(saveDir);
+    if (!DirectoryExists(saveDir)) MakeDirectory(saveDir);
+
     char savePath[PATH_BUFFER_SIZE];
-    snprintf(savePath, PATH_BUFFER_SIZE, "%s/%s.dat", saveDir, gCurrentScene);
+    snprintf(savePath, PATH_BUFFER_SIZE, "%s/%s", saveDir, gCurrentScene);
 
-    char globalState[8192] = {0};
-    serialize_game_state(globalState, sizeof(globalState));
+    FILE *f = fopen(savePath, "w");
+    if (!f) {
+        TraceLog(LOG_ERROR, "Failed to open save file: %s", savePath);
+        return;
+    }
 
-    char content[16384] = {0};
-    // Save three parts: current scene, global state, and user save data.
-    snprintf(content, sizeof(content), "%s\n%s\n%s", gCurrentScene, globalState, gUserData);
-    SaveFileText(savePath, content);
+    fprintf(f, "current_scene = \"%s\"\n\n", gCurrentScene);
+
+    fprintf(f, "global_state = {\n");
+    fprintf(f, "    moduleFolder  = \"%s\",\n", gGameState.moduleFolder);
+    fprintf(f, "    screenWidth   = %d,\n",   gGameState.screenWidth);
+    fprintf(f, "    screenHeight  = %d,\n",   gGameState.screenHeight);
+    fprintf(f, "    settings      = %s,\n",   gGameState.settings      ? "true" : "false");
+    fprintf(f, "    isPaused      = %s,\n",   gGameState.isPaused      ? "true" : "false");
+    fprintf(f, "    hasMusic      = %s,\n",   gGameState.hasMusic      ? "true" : "false");
+    fprintf(f, "    hasBackground = %s,\n",   gGameState.hasBackground ? "true" : "false");
+    fprintf(f, "    bgfile        = \"%s\",\n", gGameState.bgfile);
+    fprintf(f, "    musicfile     = \"%s\",\n", gGameState.musicfile);
+    fprintf(f, "    sprites = {\n");
+    for (int i = 0; i < gGameState.spriteCount; i++) {
+        Sprite *s = &gGameState.sprites[i];
+        fprintf(f,
+            "      { file = \"%s\", id = \"%s\", x = %.2f, y = %.2f },\n",
+            gGameState.spritefiles[i],
+            s->hasID ? s->id : "",
+            s->pos.x,
+            s->pos.y
+        );
+    }
+    fprintf(f, "    },\n");
+
+    fprintf(f, "    hasDialog    = %s,\n", gGameState.hasDialog ? "true" : "false");
+    if (gGameState.hasDialog) {
+        fprintf(f, "    dialogName   = \"%s\",\n", gGameState.dialogName);
+        fprintf(f, "    dialogText   = \"%s\",\n", gGameState.dialogText);
+        fprintf(f, "    dialogHasPos = %s,\n", gGameState.dialogHasPos ? "true" : "false");
+        if (gGameState.dialogHasPos) {
+            fprintf(f, "    dialogPos    = { x = %.2f, y = %.2f },\n",
+                    gGameState.dialogPos.x,
+                    gGameState.dialogPos.y);
+        }
+    }
+    fprintf(f, "}\n\n");
+
+    lua_getglobal(gL, "require");
+    lua_pushstring(gL, "serpent");
+    if (lua_pcall(gL, 1, 1, 0) != LUA_OK) {
+        fprintf(stderr, "require error: %s\n", lua_tostring(gL, -1));
+        lua_pop(gL, 1);
+    } else {
+        // stack: [serpent]
+        lua_getfield(gL, -1, "block");         // [serpent, block]
+        // arg #1: the value
+        lua_getglobal(gL, "user_data");        // [serpent, block, user_data]
+        // arg #2: opts table
+        lua_newtable(gL);                      // [serpent, block, user_data, opts]
+        lua_pushliteral(gL, "   ");            // [ …, opts, indent]
+        lua_setfield(gL, -2, "indent");        // opts.indent = "    "
+        lua_pushboolean(gL, 0);                // [ …, opts, comment=false ]
+        lua_setfield(gL, -2, "comment");       // opts.comment = false
+
+        if (lua_pcall(gL, 2, 1, 0) != LUA_OK) {
+            fprintf(stderr, "serpent.block error: %s\n", lua_tostring(gL, -1));
+            lua_pop(gL, 1);
+        } else {
+            const char *udump = lua_tostring(gL, -1);
+            fprintf(f, "user_data = %s\n", udump);
+            lua_pop(gL, 1);  // pop the dump
+        }
+
+        lua_pop(gL, 2); // pop block + serpent
+    }
+
+    fclose(f);
     TraceLog(LOG_INFO, "Game saved to: %s", savePath);
 }
 
 static void loadScene(const char *sceneFile) {
-    save();
+    if (s_skipNextSave) save();
+    s_skipNextSave = true;
     strncpy(gLastScene, gCurrentScene, BUFFER_SIZE - 1);
     gLastScene[BUFFER_SIZE - 1] = '\0';
     strncpy(gCurrentScene, sceneFile, BUFFER_SIZE - 1);
@@ -303,51 +331,14 @@ static void rollbackScene(void) {
     TraceLog(LOG_INFO, "Rolled back and restarted scene: %s", gCurrentScene);
 }
 
-// TODO: make iterable and check table recursion
-static void serialize_table(lua_State *L, int index, char *buffer, size_t *offset, size_t maxSize) {
-    size_t n = *offset;
-    if(n < maxSize - 1) buffer[n++] = '{';
-    int first = 1;
-    lua_pushnil(L);  // first key
-    while (lua_next(L, index)) {
-        if (!first && n < maxSize - 1)
-            buffer[n++] = ',';
-        first = 0;
-        // Serialize key
-        if (lua_type(L, -2) == LUA_TSTRING) {
-            const char *key = lua_tostring(L, -2);
-            n += snprintf(buffer + n, maxSize - n, "[\"%s\"]=", key);
-        } else if (lua_type(L, -2) == LUA_TNUMBER) {
-            double key = lua_tonumber(L, -2);
-            n += snprintf(buffer + n, maxSize - n, "[%g]=", key);
-        }
-        // Serialize value
-        int t = lua_type(L, -1);
-        if (t == LUA_TSTRING) {
-            const char *val = lua_tostring(L, -1);
-            n += snprintf(buffer + n, maxSize - n, "\"%s\"", val);
-        } else if (t == LUA_TNUMBER) {
-            double val = lua_tonumber(L, -1);
-            n += snprintf(buffer + n, maxSize - n, "%g", val);
-        } else if (t == LUA_TBOOLEAN) {
-            n += snprintf(buffer + n, maxSize - n, "%s", lua_toboolean(L, -1) ? "true" : "false");
-        } else if (t == LUA_TTABLE) {
-            int absIndex = lua_gettop(L);
-            serialize_table(L, absIndex, buffer, &n, maxSize);
-        } else {
-            n += snprintf(buffer + n, maxSize - n, "nil");
-        }
-        lua_pop(L, 1); // pop the value, keep key for next iteration
-    }
-    if(n < maxSize - 1)
-        buffer[n++] = '}';
-    buffer[n] = '\0';
-    *offset = n;
-}
-
 static void restore_game_state(lua_State *L) {
     lua_getglobal(L, "global_state");
     if (lua_istable(L, -1)) {
+        lua_getfield(L, -1, "moduleFolder");
+        if (lua_isstring(L, -1)) {
+            gGameState.moduleFolder = strdup(lua_tostring(L, -1));
+        }
+        lua_pop(L,1);
         lua_getfield(L, -1, "bgfile");
         if (lua_isstring(L, -1)) {
             strncpy(gGameState.bgfile, lua_tostring(L, -1), PATH_BUFFER_SIZE - 1);
@@ -364,24 +355,72 @@ static void restore_game_state(lua_State *L) {
             gGameState.hasMusic = true;
         }
         lua_pop(L,1);
-        lua_getfield(L, -1, "spritefiles");
+        lua_getfield(L, -1, "sprites");
         if (lua_istable(L, -1)) {
             int count = 0;
             lua_pushnil(L);
             while (lua_next(L, -2) && count < CACHE_SIZE) {
-                if (lua_isstring(L, -1)) {
-                    strncpy(gGameState.spritefiles[count], lua_tostring(L, -1), PATH_BUFFER_SIZE - 1);
-                    gGameState.spritefiles[count][PATH_BUFFER_SIZE - 1] = '\0';
-                    gGameState.sprites[count].texture = LoadTexture(gGameState.spritefiles[count]);
-                    gGameState.sprites[count].pos = (Vector2){0, 0};
+                // stack: …, key, tbl
+                lua_getfield(L, -1, "file");
+                const char *path = luaL_checkstring(L, -1);
+                lua_pop(L,1);
+    
+                lua_getfield(L, -1, "id");
+                const char *id = lua_isstring(L,-1) ? lua_tostring(L,-1) : NULL;
+                lua_pop(L,1);
+    
+                lua_getfield(L, -1, "x");
+                float x = luaL_optnumber(L,-1,0);
+                lua_pop(L,1);
+                lua_getfield(L, -1, "y");
+                float y = luaL_optnumber(L,-1,0);
+                lua_pop(L,1);
+    
+                // load it
+                Texture2D tex = LoadTexture(path);
+                gGameState.sprites[count].texture = tex;
+                gGameState.sprites[count].pos     = (Vector2){ x, y };
+                if (id) {
+                    strncpy(gGameState.sprites[count].id, id, BUFFER_SIZE-1);
+                    gGameState.sprites[count].hasID = true;
+                } else {
                     gGameState.sprites[count].hasID = false;
-                    count++;
                 }
+                strncpy(gGameState.spritefiles[count], path, PATH_BUFFER_SIZE-1);
+                count++;
                 lua_pop(L,1);
             }
             gGameState.spriteCount = count;
         }
         lua_pop(L,1);
+    
+        // restore dialog
+        lua_getfield(L, -1, "hasDialog");
+        gGameState.hasDialog = lua_toboolean(L, -1);
+        lua_pop(L,1);
+        if (gGameState.hasDialog) {
+            lua_getfield(L, -1, "dialogName");
+            strncpy(gGameState.dialogName, luaL_optstring(L,-1,""), BUFFER_SIZE-1);
+            lua_pop(L,1);
+    
+            lua_getfield(L, -1, "dialogText");
+            strncpy(gGameState.dialogText, luaL_optstring(L,-1,""), BUFFER_SIZE-1);
+            lua_pop(L,1);
+    
+            lua_getfield(L, -1, "dialogHasPos");
+            gGameState.dialogHasPos = lua_toboolean(L, -1);
+            lua_pop(L,1);
+            if (gGameState.dialogHasPos) {
+                lua_getfield(L, -1, "dialogPos");
+                lua_getfield(L, -1, "x");
+                gGameState.dialogPos.x = luaL_checknumber(L, -1);
+                lua_pop(L,1);
+                lua_getfield(L, -1, "y");
+                gGameState.dialogPos.y = luaL_checknumber(L, -1);
+                lua_pop(L,1);
+                lua_pop(L,1);
+            }
+        }
     }
     lua_pop(L,1);
 }
@@ -394,44 +433,31 @@ static void loadSave(void) {
     char path[PATH_BUFFER_SIZE];
 
     if (gFileDialog.SelectFilePressed) {
-        if (IsFileExtension(gFileDialog.fileNameText, ".dat")) {
-            TraceLog(LOG_INFO, "Loaded save: %s", gFileDialog.fileNameText);
+        if (IsFileExtension(gFileDialog.fileNameText, ".lua")) {
+            char path[PATH_BUFFER_SIZE];
             snprintf(path, PATH_BUFFER_SIZE, "saves/%s", gFileDialog.fileNameText);
-            const char *fileText = LoadFileText(path);
-            if (fileText) {
-                strncpy(data, fileText, sizeof(data) - 1);
-                data[sizeof(data) - 1] = '\0';
-                // Split into three parts: scene, global state, user data.
-                char *line1 = data;
-                char *line2 = strchr(data, '\n');
-                if (line2) {
-                    *line2 = '\0';
-                    line2++;
-                    char *line3 = strchr(line2, '\n');
-                    if (line3) {
-                        *line3 = '\0';
-                        line3++;
-                        strncpy(gCurrentScene, line1, BUFFER_SIZE - 1);
-                        gCurrentScene[BUFFER_SIZE - 1] = '\0';
-                        if (luaL_loadstring(gL, line2) == LUA_OK) {
-                            if (lua_pcall(gL, 0, 1, 0) == LUA_OK) {
-                                lua_setglobal(gL, "global_state");
-                                restore_game_state(gL);
-                            } else {
-                                TraceLog(LOG_ERROR, "Error executing global state chunk: %s", lua_tostring(gL, -1));
-                            }
-                        } else {
-                            TraceLog(LOG_ERROR, "Error loading global state chunk: %s", lua_tostring(gL, -1));
-                        }
-                        strncpy(gUserData, line3, sizeof(gUserData)-1);
-                        gUserData[sizeof(gUserData)-1] = '\0';
-                    }
-                }
+
+            if (luaL_dofile(gL, path) == LUA_OK) {
+                lua_getglobal(gL, "current_scene");
+                strncpy(gCurrentScene,
+                        lua_tostring(gL, -1),
+                        BUFFER_SIZE-1);
+                lua_pop(gL, 1);
+            
+                lua_getglobal(gL, "global_state");
+                if (lua_istable(gL, -1)) restore_game_state(gL);
+                lua_pop(gL, 1);
+
+                s_skipNextSave = false;
+                loadScene(gCurrentScene);
+
+                screen = GAME;
+                menu   = NONE;
+                gFileDialog.windowActive = false;
+                return;
+            } else {
+                TraceLog(LOG_ERROR, "Failed to load save: %s", lua_tostring(gL, -1));
             }
-            gFileDialog.SelectFilePressed = false;
-            gFileDialog.windowActive = false;
-            menu = NONE;
-            return;
         }
         gFileDialog.SelectFilePressed = false;
     }
@@ -448,22 +474,9 @@ static int l_module_init(lua_State *L) {
     return 0;
 }
 
- static int l_set_save_data(lua_State *L) {
-    if (lua_istable(L, 1)) {
-        char buffer[4096] = {0};
-        size_t offset = 0;
-        // Ensure the table is at a positive index.
-        serialize_table(L, 1, buffer, &offset, sizeof(buffer));
-        strncpy(gUserData, buffer, sizeof(gUserData) - 1);
-        gUserData[sizeof(gUserData) - 1] = '\0';
-    } else if (lua_isstring(L, 1)) {
-        const char *data = lua_tostring(L, 1);
-        strncpy(gUserData, data, sizeof(gUserData) - 1);
-        gUserData[sizeof(gUserData) - 1] = '\0';
-    } else {
-        return luaL_error(L, "Unsupported type for save data");
-    }
-    TraceLog(LOG_INFO, "User save data set: %s", gUserData);
+static int l_set_save_data(lua_State *L) {
+    luaL_checkany(L, 1);
+    lua_setglobal(L, "user_data");    // pops arg, assigns it
     return 0;
 }
 
@@ -1056,6 +1069,13 @@ int main(void) {
 
     gL = luaL_newstate();
     luaL_openlibs(gL);
+    if (luaL_dostring(gL,
+        "package.path = 'build/lua/?.lua;' .. package.path"
+    ) != LUA_OK) {
+        fprintf(stderr, "error extending package.path: %s\n",
+                lua_tostring(gL, -1));
+        lua_pop(gL, 1);
+    }
 
     lua_register(gL, "load_background", l_load_background);
     lua_register(gL, "load_sprite", l_load_sprite);
