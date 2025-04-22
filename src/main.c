@@ -70,14 +70,14 @@ typedef struct {
     bool dialogHasPos;
     Choice choices[MAX_CHOICES];
     int choiceCount;
-    char* moduleFolder;
+    char moduleFolder[PATH_BUFFER_SIZE];
     char bgfile[PATH_BUFFER_SIZE];
     char musicfile[PATH_BUFFER_SIZE];
     char spritefiles[CACHE_SIZE][PATH_BUFFER_SIZE];
 } GameState;
 
 static GameState gGameState = {
-    .moduleFolder = "",
+   .moduleFolder = {0},
 };
 
 vec(GameState) gameStateStack;
@@ -336,7 +336,7 @@ static void restore_game_state(lua_State *L) {
     if (lua_istable(L, -1)) {
         lua_getfield(L, -1, "moduleFolder");
         if (lua_isstring(L, -1)) {
-            gGameState.moduleFolder = strdup(lua_tostring(L, -1));
+            strncpy(gGameState.moduleFolder, lua_tostring(L, -1), PATH_BUFFER_SIZE-1);
         }
         lua_pop(L,1);
         lua_getfield(L, -1, "bgfile");
@@ -470,7 +470,7 @@ static int l_pop_state(lua_State *L) {
 }
 
 static int l_module_init(lua_State *L) {
-    gGameState.moduleFolder = luaL_checkstring(L, 1);
+    strncpy(gGameState.moduleFolder, luaL_checkstring(L, 1), PATH_BUFFER_SIZE-1);
     return 0;
 }
 
@@ -923,7 +923,6 @@ static inline void pauseMenuSelect(int index, void* data) {
         case 4: {
             cleanCache();
             gGameState.hasDialog = false;
-            gGameState.moduleFolder = "";
             gGameState.isPaused = false;
             menu = NONE;
             screen = TITLE;
