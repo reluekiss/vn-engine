@@ -244,6 +244,31 @@ static void save() {
                     gGameState.dialogPos.y);
         }
     }
+    fprintf(f,
+        "    textColor        = { r = %d, g = %d, b = %d, a = %d },\n",
+        gGameState.textColor.r,
+        gGameState.textColor.g,
+        gGameState.textColor.b,
+        gGameState.textColor.a
+    );
+    fprintf(f,
+        "    dialogNameColor  = { r = %d, g = %d, b = %d, a = %d },\n",
+        gGameState.dialogNameColor.r,
+        gGameState.dialogNameColor.g,
+        gGameState.dialogNameColor.b,
+        gGameState.dialogNameColor.a
+    );
+    // choices
+    fprintf(f, "    choices       = {\n");
+    for (int i = 0; i < gGameState.choiceCount; i++) {
+        fprintf(f,
+            "      { text = \"%s\", scene = \"%s\" },\n",
+            gGameState.choices[i].text,
+            gGameState.choices[i].scene
+        );
+    }
+    fprintf(f, "    },\n");
+    fprintf(f, "    choiceCount   = %d,\n", gGameState.choiceCount);
     fprintf(f, "}\n\n");
 
     lua_getglobal(gL, "require");
@@ -280,8 +305,8 @@ static void save() {
 }
 
 static void loadScene(const char *sceneFile) {
-    if (s_skipNextSave) save();
-    s_skipNextSave = true;
+    if (!s_skipNextSave) save();
+    s_skipNextSave = false;
     strncpy(gLastScene, gCurrentScene, BUFFER_SIZE - 1);
     gLastScene[BUFFER_SIZE - 1] = '\0';
     strncpy(gCurrentScene, sceneFile, BUFFER_SIZE - 1);
@@ -420,6 +445,66 @@ static void restore_game_state(lua_State *L) {
                 lua_pop(L,1);
                 lua_pop(L,1);
             }
+            lua_getfield(L, -1, "textColor");
+            if (lua_istable(L, -1)) {
+                lua_getfield(L, -1, "r");
+                gGameState.textColor.r = luaL_optinteger(L, -1, 255);
+                lua_pop(L, 1);
+                lua_getfield(L, -1, "g");
+                gGameState.textColor.g = luaL_optinteger(L, -1, 255);
+                lua_pop(L, 1);
+                lua_getfield(L, -1, "b");
+                gGameState.textColor.b = luaL_optinteger(L, -1, 255);
+                lua_pop(L, 1);
+                lua_getfield(L, -1, "a");
+                gGameState.textColor.a = luaL_optinteger(L, -1, 255);
+                lua_pop(L, 1);
+            }
+            lua_pop(L, 1);
+            lua_getfield(L, -1, "dialogNameColor");
+            if (lua_istable(L, -1)) {
+                lua_getfield(L, -1, "r");
+                gGameState.dialogNameColor.r = luaL_optinteger(L, -1, 255);
+                lua_pop(L, 1);
+                lua_getfield(L, -1, "g");
+                gGameState.dialogNameColor.g = luaL_optinteger(L, -1, 255);
+                lua_pop(L, 1);
+                lua_getfield(L, -1, "b");
+                gGameState.dialogNameColor.b = luaL_optinteger(L, -1, 255);
+                lua_pop(L, 1);
+                lua_getfield(L, -1, "a");
+                gGameState.dialogNameColor.a = luaL_optinteger(L, -1, 255);
+                lua_pop(L, 1);
+            }
+            lua_pop(L, 1);
+            // choices
+            lua_getfield(L, -1, "choices");
+            if (lua_istable(L, -1)) {
+                gGameState.choiceCount = 0;
+                for (int i = 1; ; i++) {
+                    lua_rawgeti(L, -1, i);
+                    if (lua_isnil(L, -1)) { lua_pop(L,1); break; }
+                    if (lua_istable(L, -1) && gGameState.choiceCount < MAX_CHOICES) {
+                        lua_getfield(L, -1, "text");
+                        strncpy(gGameState.choices[gGameState.choiceCount].text,
+                                luaL_optstring(L,-1,""), BUFFER_SIZE-1);
+                        lua_pop(L,1);
+                        lua_getfield(L, -1, "scene");
+                        strncpy(gGameState.choices[gGameState.choiceCount].scene,
+                                luaL_optstring(L,-1,""), BUFFER_SIZE-1);
+                        lua_pop(L,1);
+                        gGameState.choiceCount++;
+                    }
+                    lua_pop(L,1);
+                }
+            }
+            lua_pop(L,1);
+            // restore explicit count (optional)
+            lua_getfield(L, -1, "choiceCount");
+            if (lua_isnumber(L,-1)) {
+                gGameState.choiceCount = lua_tointeger(L,-1);
+            }
+            lua_pop(L,1);
         }
     }
     lua_pop(L,1);
@@ -438,19 +523,28 @@ static void loadSave(void) {
             snprintf(path, PATH_BUFFER_SIZE, "saves/%s", gFileDialog.fileNameText);
 
             if (luaL_dofile(gL, path) == LUA_OK) {
-                lua_getglobal(gL, "current_scene");
-                strncpy(gCurrentScene,
-                        lua_tostring(gL, -1),
-                        BUFFER_SIZE-1);
-                lua_pop(gL, 1);
+               if (gGameState.hasBackground) {
+                   UnloadTexture(gGameState.background);
+                   gGameState.hasBackground = false;
+               }
+               for (int i = 0; i < gGameState.spriteCount; i++) {
+                   UnloadTexture(gGameState.sprites[i].texture);
+               }
+               gGameState.spriteCount = 0;
+               if (gGameState.hasMusic) {
+                   StopMusicStream(gGameState.music);
+                   UnloadMusicStream(gGameState.music);
+                   gGameState.hasMusic = false;
+               }
             
                 lua_getglobal(gL, "global_state");
                 if (lua_istable(gL, -1)) restore_game_state(gL);
                 lua_pop(gL, 1);
 
-                s_skipNextSave = false;
-                loadScene(gCurrentScene);
-
+                // s_skipNextSave = true;
+                // loadScene(gCurrentScene);
+                gGameState.isPaused        = false;
+                gGameState.settings        = false;
                 screen = GAME;
                 menu   = NONE;
                 gFileDialog.windowActive = false;
